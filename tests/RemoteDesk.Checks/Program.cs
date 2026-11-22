@@ -1,5 +1,6 @@
 using RemoteDesk;
 using System.Text.Json;
+using Microsoft.Win32;
 
 var location = Path.Combine(Path.GetTempPath(), "RemoteDesk checks " + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(location);
@@ -54,6 +55,33 @@ try
         {
             var path = Path.Combine(location, "missing.exe");
             Throws<FileNotFoundException>(() => RustDeskClient.CreateConnection(path, DeviceProfile.Create("家里的电脑", "123456789")));
+        }),
+        ("discovers RustDesk from custom install records and quoted service commands", () =>
+        {
+            if (!OperatingSystem.IsWindows()) return;
+            var folder = Path.Combine(location, "Custom Applications");
+            Directory.CreateDirectory(folder);
+            var exe = Path.Combine(folder, "rustdesk.exe");
+            File.WriteAllBytes(exe, []);
+            var keyName = @"Software\RemoteDesk-Discovery-Test-" + Guid.NewGuid().ToString("N");
+            using var root = Registry.CurrentUser.CreateSubKey(keyName);
+            try
+            {
+                using var msi = root.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{test-install}");
+                msi.SetValue("DisplayName", "RustDesk");
+                msi.SetValue("InstallLocation", folder);
+                Equal(exe, RustDeskClient.FindRegisteredClient(root));
+                msi.DeleteValue("InstallLocation");
+                msi.SetValue("DisplayIcon", $"\"{exe}\",0");
+                Equal(exe, RustDeskClient.FindRegisteredClient(root));
+                msi.DeleteValue("DisplayIcon");
+                using var service = root.CreateSubKey(@"SYSTEM\CurrentControlSet\Services\RustDesk");
+                service.SetValue("ImagePath", $"\"{exe}\" --service");
+                Equal(exe, RustDeskClient.FindRegisteredClient(root));
+                service.SetValue("ImagePath", exe + ".bak");
+                Equal<string?>(null, RustDeskClient.FindRegisteredClient(root));
+            }
+            finally { Registry.CurrentUser.DeleteSubKeyTree(keyName); }
         }),
     };
 

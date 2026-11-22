@@ -5,11 +5,16 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.3.1</Version>
+    <Version>0.4.0</Version>
+    <StartupObject>RemoteDesk.App</StartupObject>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
     <ApplicationIcon>Assets\remotedesk.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\remotedesk.ico" />
     <Resource Include="Assets\remotedesk.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 </Project>

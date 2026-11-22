@@ -43,7 +43,7 @@
                     <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="19" />
                 </Button>
                 <Button x:Name="SettingsNav" DockPanel.Dock="Bottom" Click="ShowSettingsPage" Style="{StaticResource RailButton}"
-                        Margin="0,0,0,12" ToolTip="RustDesk 设置" AutomationProperties.Name="RustDesk 设置" AutomationProperties.AutomationId="SettingsNav">
+                        Margin="0,0,0,12" ToolTip="设置" AutomationProperties.Name="设置" AutomationProperties.AutomationId="SettingsNav">
                     <TextBlock Text="&#xE713;" Style="{StaticResource Icon}" FontSize="18" />
                 </Button>
             </DockPanel>
@@ -207,7 +207,7 @@
                                     <StackPanel>
                                         <TextBlock Text="连接准备" FontSize="16" FontWeight="SemiBold" />
                                         <DockPanel Margin="0,12,0,12">
-                                            <Button DockPanel.Dock="Right" Content="配置客户端" Click="ShowSettingsPage" Margin="12,0,0,0"
+                                            <Button DockPanel.Dock="Right" Content="查看设置" Click="ShowSettingsPage" Margin="12,0,0,0"
                                                     Style="{StaticResource QuietButton}" AutomationProperties.AutomationId="ConfigureClient" />
                                             <StackPanel VerticalAlignment="Center">
                                                 <TextBlock Text="本机客户端" FontWeight="SemiBold" />
@@ -227,7 +227,7 @@
 
                             <StackPanel x:Name="SettingsPage" Visibility="Collapsed">
 
-                                <TextBlock Text="查看或更换用于发起远程会话的本机程序。" Margin="1,5,0,18" Foreground="{StaticResource Muted}" />
+                                <TextBlock Text="管理本机客户端和 RemoteDesk 更新。" Margin="1,5,0,18" Foreground="{StaticResource Muted}" />
                                 <Border CornerRadius="19" Padding="19" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1">
                                     <StackPanel>
                                         <TextBlock Text="RustDesk 客户端" FontWeight="SemiBold" FontSize="18" />
@@ -235,9 +235,17 @@
                                                    AutomationProperties.LiveSetting="Polite" />
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                             <Button Content="官方下载" Click="OpenRustDeskDownload" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                                            <Button x:Name="SelectClientButton" Content="选择程序" Click="SelectRustDesk" Style="{StaticResource PrimaryButton}"
+                                            <Button x:Name="SelectClientButton" Content="选择便携版" Click="SelectRustDesk" Style="{StaticResource QuietButton}" Margin="0,0,8,0"
                                                     AutomationProperties.AutomationId="SelectClient" />
+                                            <Button x:Name="RescanButton" Content="重新检测" Click="RescanClient" Style="{StaticResource PrimaryButton}" />
                                         </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border CornerRadius="19" Padding="19" Margin="0,14,0,0" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock x:Name="AppVersion" FontWeight="SemiBold" FontSize="18" />
+                                        <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" Margin="0,6,0,12" Foreground="{StaticResource Muted}" AutomationProperties.LiveSetting="Polite" />
+                                        <Button x:Name="UpdateButton" Content="检查更新" Click="UpdateClicked" HorizontalAlignment="Right" Style="{StaticResource QuietButton}" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

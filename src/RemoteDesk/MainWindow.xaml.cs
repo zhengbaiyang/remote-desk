@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        InitializeUpdates();
         try
         {
             settings = store.Load();
@@ -69,14 +70,14 @@ public partial class MainWindow : Window
     {
         SetCurrentPage(showSettings: true);
         RefreshClientStatus();
-        SelectClientButton.Focus();
+        RescanButton.Focus();
     }
 
     private void SetCurrentPage(bool showSettings)
     {
         DevicePage.Visibility = showSettings ? Visibility.Collapsed : Visibility.Visible;
         SettingsPage.Visibility = showSettings ? Visibility.Visible : Visibility.Collapsed;
-        CurrentPage.Text = showSettings ? "RustDesk 设置" : "我的电脑";
+        CurrentPage.Text = showSettings ? "设置" : "我的电脑";
         DevicesNav.Tag = SidebarDevice.Tag = showSettings ? null : "Selected";
         SettingsNav.Tag = showSettings ? "Selected" : null;
         ShowStatus("");
@@ -171,7 +172,7 @@ public partial class MainWindow : Window
         if (executable is null)
         {
             ShowSettingsPage(sender, e);
-            ShowStatus("请下载 RustDesk，或选择你已有的 RustDesk 程序，再点击连接。", warning: true);
+            ShowStatus("请先安装 RustDesk，返回此窗口后会自动检测。", warning: true);
             return;
         }
 
@@ -183,7 +184,7 @@ public partial class MainWindow : Window
         catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException)
         {
             ShowSettingsPage(sender, e);
-            ShowStatus("无法启动 RustDesk。请重新选择程序，或检查 RustDesk 能否正常打开。", warning: true);
+            ShowStatus("无法启动 RustDesk。请检查 RustDesk 能否正常打开，再点「重新检测」。", warning: true);
         }
     }
 
@@ -250,14 +251,16 @@ public partial class MainWindow : Window
 
     private void FocusDeviceAction() => (settings.Device is null ? AddDeviceButton : ConnectButton).Focus();
 
+    private void RescanClient(object sender, RoutedEventArgs e) => RefreshClientStatus();
+
     private string? RefreshClientStatus()
     {
         var executable = RustDeskClient.FindExecutable(settings.ClientPath);
         ClientDot.Fill = (Brush)FindResource(executable is null ? "Warning" : "Ready");
         ClientStatus.Text = executable is null ? "未找到 RustDesk" : "已找到 RustDesk";
         ClientStatus.ToolTip = executable;
-        LocalClientHint.Text = executable is null ? "需要选择或下载 RustDesk。" : "已检测到 RustDesk，可发起会话。";
-        ClientPathText.Text = executable ?? "请先下载 RustDesk，或选择已有的 RustDesk 程序。";
+        LocalClientHint.Text = executable is null ? "安装 RustDesk 后会自动检测。" : "已检测到 RustDesk，可发起会话。";
+        ClientPathText.Text = executable ?? "尚未检测到 RustDesk。安装后回到此窗口，或点击「重新检测」。";
         return executable;
     }
 
