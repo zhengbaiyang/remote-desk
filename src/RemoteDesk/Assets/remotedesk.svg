@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>RemoteDesk</title>
+  <rect x="3" y="3" width="122" height="122" rx="30" fill="#203445" stroke="#526474" stroke-width="2"/>
+  <path d="M58 86H34a9 9 0 0 1-9-9V40a9 9 0 0 1 9-9h59a9 9 0 0 1 9 9v18"
+        fill="none" stroke="#F2F8F9" stroke-width="10" stroke-linecap="round"/>
+  <path d="m64 59 41 16-16 6 15 16-8 8-16-16-6 16z" fill="#87E4D1" stroke="#87E4D1"
+        stroke-width="3" stroke-linejoin="round"/>
+</svg>

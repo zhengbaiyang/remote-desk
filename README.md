@@ -1,42 +1,58 @@
-# RemoteDesk 远程桌面
+<p align="center">
+  <img src="src/RemoteDesk/Assets/remotedesk.png" alt="RemoteDesk 项目标志" width="80" height="80">
+</p>
 
-RemoteDesk 是一个 Windows 桌面启动器。保存自己的电脑后，从首页点一次「连接」即可打开 RustDesk 远程会话。
+<h1 align="center">RemoteDesk 远程桌面</h1>
 
-![RemoteDesk 首页，显示示例设备](docs/images/desktop.png)
+<p align="center">在 Windows 上保存家里电脑的 RustDesk ID，下次点一下「连接」就能发起远程会话。</p>
 
-## 功能
+<p align="center">
+  <a href="https://github.com/zhengbaiyang/remote-desk/releases/latest"><strong>下载 Windows x64 版</strong></a> ·
+  <a href="#首次连接">首次连接</a> ·
+  <a href="#从源码构建">从源码构建</a>
+</p>
 
-- 保存设备名称和 RustDesk ID，重启后可继续使用。在「编辑」中可以更新资料或移除设备。
-- 页面顶部支持拖动、双击最大化和窗口控制。首页显示本机客户端准备状态，缺少客户端时点「连接」会打开设置。
-- 自动查找本机 RustDesk，也支持手动选择便携版程序。
-- 在首页发起会话，连接状态以 RustDesk 的会话窗口为准。
-- 支持两端使用同一套 RustDesk 自托管服务。直连与中继由 RustDesk 选择。
+![RemoteDesk 实际运行界面。左侧是已保存的电脑，右侧设备卡提供编辑、连接和客户端设置入口。](docs/images/desktop.png)
 
-## 下载与安装
+## 首次连接
 
-1. 在控制端下载 `RemoteDesk-v0.3.0-win-x64.zip`，解压后运行 `RemoteDesk.exe`。压缩包内已包含 .NET 运行时。 [GitHub Releases](https://github.com/zhengbaiyang/remote-desk/releases/latest)
-2. 在控制端和被控端准备 RustDesk。安装版通常会被自动找到。使用便携版时，在 RemoteDesk 左侧打开「RustDesk 设置」，点击「选择程序」并选择 RustDesk 的 `.exe`。 [RustDesk 官方下载](https://github.com/rustdesk/rustdesk/releases/latest)
-3. 在被控端的 RustDesk 首页查看设备 ID。需要无人值守时，在被控端的 RustDesk 安全设置中设置固定密码，并保持 RustDesk 运行。
-4. 在 RemoteDesk 的「我的电脑」页点击「添加电脑」，保存名称和设备 ID。点击「连接」，在 RustDesk 的远程会话中完成首次验证。使用固定密码时可以勾选「记住密码」，下次直接点击「连接」。
+准备两台电脑。**操作端**是你手边的 Windows 电脑，**目标端**是你想远程使用的那台电脑。
 
-如果使用自托管服务，请在两端的 RustDesk 客户端填写同一套服务配置，再用 RemoteDesk 发起连接。 [RustDesk 自托管说明](https://rustdesk.com/docs/en/self-host/)
+| 在哪台电脑上 | 做什么 |
+| --- | --- |
+| 目标端 | 安装并打开 RustDesk，记下首页显示的设备 ID，保持电脑唤醒。需要无人值守时，可在 RustDesk 安全设置中设置固定密码。[RustDesk 官方下载](https://github.com/rustdesk/rustdesk/releases/latest) |
+| 操作端 | 安装 RustDesk，然后从发布页的 **Assets** 下载文件名以 `win-x64.zip` 结尾的压缩包。解压并运行 `RemoteDesk.exe`，包内已包含 .NET 运行时。[RemoteDesk 下载](https://github.com/zhengbaiyang/remote-desk/releases/latest) |
 
-## 本地构建与测试
+在 RemoteDesk 的「我的电脑」里点 **添加电脑**，输入名称和目标端的设备 ID，保存后点 **连接**。首次验证在 RustDesk 会话窗口完成。以后打开 RemoteDesk，首页会直接显示这台电脑。
 
-使用 Windows 和 .NET 8 SDK。在仓库根目录执行以下命令。
+## 设备与连接
+
+- **设备管理**　当前版本保存一台常用电脑。点「编辑」可以改名、更换设备 ID，或移除这条记录。
+- **找不到 RustDesk**　在「RustDesk 设置」里点「选择程序」，选中本机的 RustDesk 可执行文件。便携版也可以这样配置。
+- **目标端连不上**　首页的「已找到 RustDesk」表示操作端已找到客户端。请在会话窗口查看连接结果，并确认目标端已唤醒、RustDesk 正在运行。
+- **使用自建服务器**　在两端的 RustDesk 中填写同一套服务配置，再回到 RemoteDesk 点击连接。[RustDesk 客户端配置](https://rustdesk.com/docs/en/self-host/client-configuration/)
+
+设备名、设备 ID 和手动选择的程序路径保存在 `%LOCALAPPDATA%\RemoteDesk\settings.json`。密码由 RustDesk 管理。升级 RemoteDesk 时，解压新版运行即可沿用已保存的电脑。
+
+## 从源码构建
+
+在 Windows 上安装 .NET 8 SDK，克隆仓库后，在仓库根目录打开 PowerShell。
 
 ```powershell
+# 运行设备校验、配置存储和客户端启动参数检查
 dotnet run --project tests/RemoteDesk.Checks/RemoteDesk.Checks.csproj -c Release
+
+# 启动桌面程序
 dotnet run --project src/RemoteDesk/RemoteDesk.csproj
+
+# 发布包含运行时的 Windows x64 单文件程序
 dotnet publish src/RemoteDesk/RemoteDesk.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o artifacts/win-x64
 ```
 
-发布命令生成 `artifacts/win-x64/RemoteDesk.exe`。
+构建产物位于 `artifacts/win-x64/RemoteDesk.exe`。要从开发版本发起实际会话，也需要单独安装或选择 RustDesk。
 
-## 技术来源与本地数据
+## 项目来源
 
-RemoteDesk 使用 C# 和 WPF 实现界面，通过 RustDesk 官方命令 `rustdesk --connect <设备ID>` 发起桌面会话。认证、屏幕传输、键鼠输入和 P2P 建连全部由单独安装的 RustDesk（AGPL-3.0）处理。 [RustDesk 源码](https://github.com/rustdesk/rustdesk) · [RustDesk 命令行说明](https://github.com/rustdesk/rustdesk/wiki/FAQ#command-line)
+RemoteDesk 的设备管理界面使用 C# 和 WPF 实现。点击连接时，它调用本机的 `rustdesk --connect <设备ID>`。身份验证、画面传输、键鼠控制，以及 P2P 直连和中继选择，均由 RustDesk（AGPL-3.0）负责。[RustDesk 源码](https://github.com/rustdesk/rustdesk)
 
-P2P 调研参考了 `uu-remote-study` 的打洞和传输实验。 [参考项目](https://github.com/numb747/uu-remote-study)
-
-设备名称、设备 ID 和手动选择的客户端路径保存在 `%LOCALAPPDATA%\RemoteDesk\settings.json`。勾选「记住密码」时，密码由 RustDesk 管理。
+项目早期对 P2P 打洞与低延迟传输的调研参考了 uu-remote-study。当前发行版使用 RustDesk 建立会话。[uu-remote-study 研究项目](https://github.com/numb747/uu-remote-study)

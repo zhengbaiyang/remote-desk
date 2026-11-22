@@ -1,7 +1,7 @@
 <Window x:Class="RemoteDesk.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RemoteDesk · 远程桌面" Width="1030" Height="630" MinWidth="760" MinHeight="550"
+        Title="RemoteDesk · 远程桌面" Icon="Assets/remotedesk.ico" Width="1030" Height="630" MinWidth="760" MinHeight="550"
         WindowStartupLocation="CenterScreen" Background="#E9EEF2" Foreground="{DynamicResource Ink}"
         FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI" FontSize="14"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
@@ -35,9 +35,8 @@
                 </LinearGradientBrush>
             </Border.Background>
             <DockPanel LastChildFill="False">
-                <Border DockPanel.Dock="Top" Width="33" Height="33" Margin="0,14,0,13" CornerRadius="11" Background="#F2F7FA">
-                    <TextBlock Text="&#xE8A7;" Style="{StaticResource Icon}" FontSize="17" Foreground="#263038" />
-                </Border>
+                <Image DockPanel.Dock="Top" Width="33" Height="33" Margin="0,14,0,13"
+                       Source="Assets/remotedesk.png" AutomationProperties.Name="RemoteDesk" RenderOptions.BitmapScalingMode="HighQuality" />
                 <Border DockPanel.Dock="Top" Height="1" Width="30" Margin="0,0,0,12" Background="#49515A" />
                 <Button x:Name="DevicesNav" DockPanel.Dock="Top" Click="ShowDevicesPage" Style="{StaticResource RailButton}"
                         Tag="Selected" ToolTip="我的电脑" AutomationProperties.Name="我的电脑" AutomationProperties.AutomationId="DevicesNav">
