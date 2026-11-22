@@ -4,7 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
-using System.Windows.Media;
+using System.Windows.Controls;
 using Microsoft.Win32;
 
 namespace RemoteDesk;
@@ -14,6 +14,8 @@ public partial class MainWindow : Window
     private readonly SettingsStore store = new(Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RemoteDesk", "settings.json"));
     private AppSettings settings = new();
+    private DeviceProfile? editingDevice;
+    private DeviceProfile? SelectedDevice => DeviceList.SelectedItem as DeviceProfile;
 
     public MainWindow()
     {
@@ -28,7 +30,8 @@ public partial class MainWindow : Window
             ShowStatus("无法读取之前的设置。你可以重新添加电脑。", warning: true);
         }
 
-        ShowDevice();
+        ApplyTheme(settings.UseDarkTheme);
+        RefreshDevices(0);
         RefreshClientStatus();
         Loaded += (_, _) => FocusDeviceAction();
         Activated += (_, _) => RefreshClientStatus();
@@ -77,27 +80,35 @@ public partial class MainWindow : Window
     {
         DevicePage.Visibility = showSettings ? Visibility.Collapsed : Visibility.Visible;
         SettingsPage.Visibility = showSettings ? Visibility.Visible : Visibility.Collapsed;
-        CurrentPage.Text = showSettings ? "设置" : "我的电脑";
-        DevicesNav.Tag = SidebarDevice.Tag = showSettings ? null : "Selected";
+        CurrentPage.Text = showSettings ? "设置" : "设备详情";
+        DevicesNav.Tag = showSettings ? null : "Selected";
         SettingsNav.Tag = showSettings ? "Selected" : null;
         ShowStatus("");
     }
 
-    private void EditDevice(object sender, RoutedEventArgs e)
+    private void AddDevice(object sender, RoutedEventArgs e)
     {
-        RemoveButton.Visibility = settings.Device is null ? Visibility.Collapsed : Visibility.Visible;
-        EditorTitle.Text = settings.Device is null ? "添加电脑" : "编辑电脑";
-        NameInput.Text = settings.Device?.Name ?? "家里的电脑";
-        IdInput.Text = settings.Device?.Id ?? "";
+        SetCurrentPage(showSettings: false);
+        OpenEditor(null);
+    }
+
+    private void EditDevice(object sender, RoutedEventArgs e) => OpenEditor(SelectedDevice);
+
+    private void OpenEditor(DeviceProfile? device)
+    {
+        editingDevice = device;
+        RemoveButton.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
+        EditorTitle.Text = device is null ? "添加电脑" : "编辑电脑";
+        NameInput.Text = device?.Name ?? "";
+        IdInput.Text = device?.Id ?? "";
         ShowEditorMessage("在目标电脑的 RustDesk 首页找到设备 ID。");
         ShowStatus("");
 
         EmptyView.Visibility = Visibility.Collapsed;
         DeviceView.Visibility = Visibility.Collapsed;
-        ConnectionTip.Visibility = Visibility.Collapsed;
+        SetDeviceListEnabled(false);
         EditorView.Visibility = Visibility.Visible;
-        IdInput.Focus();
-        IdInput.SelectAll();
+        (device is null ? NameInput : IdInput).Focus();
     }
 
     private void CancelEdit(object sender, RoutedEventArgs e)
@@ -108,7 +119,7 @@ public partial class MainWindow : Window
 
     private void RequestRemoval(object sender, RoutedEventArgs e)
     {
-        if (settings.Device is not { } device)
+        if (editingDevice is not { } device)
             return;
 
         RemovalMessage.Text = $"将从本机列表中移除「{device.Name}」。之后可以用设备 ID 重新添加。";
@@ -128,8 +139,13 @@ public partial class MainWindow : Window
     {
         try
         {
-            SaveSettings(settings with { Device = null });
-            ShowDevice();
+            var index = DeviceList.SelectedIndex;
+            if (editingDevice is null || index < 0 || !ReferenceEquals(editingDevice, SelectedDevice))
+                return;
+            var devices = settings.Devices.ToList();
+            devices.RemoveAt(index);
+            SaveSettings(settings with { Devices = devices });
+            RefreshDevices(Math.Min(index, devices.Count - 1));
             ShowStatus("已从本机列表移除电脑。");
             FocusDeviceAction();
         }
@@ -145,8 +161,25 @@ public partial class MainWindow : Window
         try
         {
             var device = DeviceProfile.Create(NameInput.Text, IdInput.Text);
-            SaveSettings(settings with { Device = device });
-            ShowDevice();
+            var devices = settings.Devices.ToList();
+            if (devices.Any(existing => !ReferenceEquals(existing, editingDevice) &&
+                string.Equals(existing.Id, device.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                ShowEditorMessage("这个设备 ID 已在列表中。", warning: true);
+                IdInput.Focus();
+                return;
+            }
+
+            var index = devices.Count;
+            if (editingDevice is null)
+                devices.Add(device);
+            else
+            {
+                index = DeviceList.SelectedIndex;
+                devices[index] = device;
+            }
+            SaveSettings(settings with { Devices = devices });
+            RefreshDevices(index);
             FocusDeviceAction();
         }
         catch (ArgumentException error)
@@ -165,7 +198,7 @@ public partial class MainWindow : Window
 
     private void ConnectDevice(object sender, RoutedEventArgs e)
     {
-        if (settings.Device is not { } device)
+        if (SelectedDevice is not { } device)
             return;
 
         var executable = RefreshClientStatus();
@@ -233,33 +266,54 @@ public partial class MainWindow : Window
         }
     }
 
+    private void RefreshDevices(int index)
+    {
+        DeviceList.ItemsSource = settings.Devices;
+        DeviceList.SelectedIndex = settings.Devices.Count == 0 ? -1 : index;
+        DeviceCount.Text = $"{settings.Devices.Count} 台";
+        DeviceListEmpty.Visibility = settings.Devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (SelectedDevice is { } device)
+            DeviceList.ScrollIntoView(device);
+        ShowDevice();
+    }
+
+    private void DeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SelectedDevice != null && SettingsPage.IsVisible)
+            SetCurrentPage(showSettings: false);
+        ShowDevice();
+        ShowStatus("");
+    }
+
+    private void SetDeviceListEnabled(bool enabled)
+    {
+        DeviceList.IsEnabled = enabled;
+        AddFromListButton.IsEnabled = enabled;
+    }
+
     private void ShowDevice()
     {
-        var device = settings.Device;
+        var device = SelectedDevice;
+        editingDevice = null;
+        SetDeviceListEnabled(true);
         EmptyView.Visibility = device is null ? Visibility.Visible : Visibility.Collapsed;
         DeviceView.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
         EditorView.Visibility = Visibility.Collapsed;
         RemovalView.Visibility = Visibility.Collapsed;
-        ConnectionTip.Visibility = Visibility.Visible;
-        SidebarEmpty.Visibility = EmptyView.Visibility;
-        SidebarDevice.Visibility = DeviceView.Visibility;
-        SidebarName.Text = device?.Name ?? "";
-        AutomationProperties.SetName(SidebarDevice, SidebarName.Text);
         DeviceNameText.Text = device?.Name ?? "";
         DeviceIdText.Text = device is null ? "" : $"设备 ID  {device.Id}";
     }
 
-    private void FocusDeviceAction() => (settings.Device is null ? AddDeviceButton : ConnectButton).Focus();
+    private void FocusDeviceAction() => (SelectedDevice is null ? AddDeviceButton : ConnectButton).Focus();
 
     private void RescanClient(object sender, RoutedEventArgs e) => RefreshClientStatus();
 
     private string? RefreshClientStatus()
     {
         var executable = RustDeskClient.FindExecutable(settings.ClientPath);
-        ClientDot.Fill = (Brush)FindResource(executable is null ? "Warning" : "Ready");
+        ClientDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, executable is null ? "Warning" : "Ready");
         ClientStatus.Text = executable is null ? "未找到 RustDesk" : "已找到 RustDesk";
         ClientStatus.ToolTip = executable;
-        LocalClientHint.Text = executable is null ? "安装 RustDesk 后会自动检测。" : "已检测到 RustDesk，可发起会话。";
         ClientPathText.Text = executable ?? "尚未检测到 RustDesk。安装后回到此窗口，或点击「重新检测」。";
         return executable;
     }
@@ -273,13 +327,39 @@ public partial class MainWindow : Window
     private void ShowStatus(string message, bool warning = false)
     {
         StatusMessage.Text = message;
-        StatusMessage.Foreground = (Brush)FindResource(warning ? "Warning" : "Muted");
+        StatusMessage.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, warning ? "Warning" : "Muted");
         StatusMessage.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void ShowEditorMessage(string message, bool warning = false)
     {
         EditorMessage.Text = message;
-        EditorMessage.Foreground = (Brush)FindResource(warning ? "Warning" : "Muted");
+        EditorMessage.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, warning ? "Warning" : "Muted");
+    }
+
+    private void ToggleTheme(object sender, RoutedEventArgs e)
+    {
+        var updated = settings with { UseDarkTheme = !settings.UseDarkTheme };
+        try
+        {
+            SaveSettings(updated);
+            ApplyTheme(updated.UseDarkTheme);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            ShowStatus("无法保存外观设置。请检查本机用户目录的写入权限。", warning: true);
+        }
+    }
+
+    private void ApplyTheme(bool dark)
+    {
+        var dictionaries = Resources.MergedDictionaries;
+        var palette = dark ? "DarkTheme.xaml" : "LightTheme.xaml";
+        if (dictionaries[0].Source.OriginalString != palette)
+            dictionaries[0] = new ResourceDictionary { Source = new Uri(palette, UriKind.Relative) };
+
+        ThemeButton.Content = dark ? "\uE706" : "\uE708";
+        ThemeButton.ToolTip = dark ? "切换到浅色外观" : "切换到深色外观";
+        AutomationProperties.SetName(ThemeButton, (string)ThemeButton.ToolTip);
     }
 }

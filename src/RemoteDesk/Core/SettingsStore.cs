@@ -1,9 +1,20 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace RemoteDesk;
 
-internal sealed record AppSettings(DeviceProfile? Device = null, string? ClientPath = null);
+internal sealed record AppSettings
+{
+    public IReadOnlyList<DeviceProfile> Devices { get; init; } = [];
+    public string? ClientPath { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseDarkTheme { get; init; }
+
+    [JsonPropertyName("device")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeviceProfile? LegacyDevice { get; init; }
+}
 
 internal sealed class SettingsStore(string path)
 {
@@ -16,8 +27,14 @@ internal sealed class SettingsStore(string path)
     {
         try
         {
-            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions)
+            var stored = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions)
                 ?? throw new JsonException("设备设置为空。");
+            var devices = stored.Devices ?? [];
+            if (devices.Any(device => device is null))
+                throw new JsonException("设备列表包含空记录。");
+            if (devices.Count == 0 && stored.LegacyDevice is { } legacy)
+                devices = [legacy];
+            return stored with { Devices = devices, LegacyDevice = null };
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {

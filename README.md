@@ -12,7 +12,7 @@
   <a href="#从源码构建">从源码构建</a>
 </p>
 
-![RemoteDesk 实际运行界面。左侧是已保存的电脑，右侧设备卡提供编辑、连接和客户端设置入口。](docs/images/desktop.png)
+![RemoteDesk 实际运行界面。左侧列出已保存的电脑，右侧显示当前设备和本机 RustDesk 检测状态。](docs/images/desktop.png)
 
 ## 首次连接
 
@@ -23,11 +23,12 @@
 | 目标端 | 安装并打开 RustDesk，记下首页显示的设备 ID，保持电脑唤醒。需要无人值守时，可在 RustDesk 安全设置中设置固定密码。[RustDesk 官方下载](https://github.com/rustdesk/rustdesk/releases/latest) |
 | 操作端 | 安装 RustDesk，然后运行 RemoteDesk 的安装包。它已包含 .NET 运行时，安装后可以从开始菜单打开。[下载 RemoteDesk 安装包](https://github.com/zhengbaiyang/remote-desk/releases/latest/download/RemoteDesk.Windows-win-Setup.exe) |
 
-在 RemoteDesk 的「我的电脑」里点 **添加电脑**，输入名称和目标端的设备 ID，保存后点 **连接**。首次验证在 RustDesk 会话窗口完成。以后打开 RemoteDesk，首页会直接显示这台电脑。
+在 RemoteDesk 的「我的电脑」里点 **添加电脑**，输入名称和目标端的设备 ID，保存后点 **连接**。首次验证在 RustDesk 会话窗口完成。以后打开 RemoteDesk，可以从左侧列表选中这台电脑并发起连接。
 
 ## 设备与连接
 
-- **设备管理**　当前版本保存一台常用电脑。点「编辑」可以改名、更换设备 ID，或移除这条记录。
+- **设备管理**　在左侧点「＋」保存多台电脑，按添加顺序排列。选中一台即可查看设备 ID、连接或编辑。旧版保存的单台电脑会自动出现在列表中。
+- **界面外观**　点击顶部的月亮或太阳图标切换浅色与深色。程序会记住上次选择。
 - **自动识别 RustDesk**　启动、返回窗口或发起连接时，程序会检查常用安装目录、Windows 安装记录、RustDesk 服务和运行中的客户端。自定义安装位置也能通过安装记录识别。设置页会显示检测到的路径；未登记且未运行的便携版可以手动指定。
 - **目标端连不上**　首页的「已找到 RustDesk」表示操作端已找到客户端。请在会话窗口查看连接结果，并确认目标端已唤醒、RustDesk 正在运行。
 - **使用自建服务器**　在两端的 RustDesk 中填写同一套服务配置，再回到 RemoteDesk 点击连接。[RustDesk 客户端配置](https://rustdesk.com/docs/en/self-host/client-configuration/)

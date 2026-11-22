@@ -21,19 +21,33 @@ try
             Throws<ArgumentException>(() => DeviceProfile.Create("家里", "123 & calc"));
             Throws<ArgumentException>(() => DeviceProfile.Create(" ", "123456789"));
         }),
-        ("persists the updated device and RustDesk path without credentials", () =>
+        ("migrates a legacy device and persists an ordered list without credentials", () =>
         {
             var path = Path.Combine(location, "prefs", "settings.json");
             var store = new SettingsStore(path);
-            Equal(new AppSettings(), store.Load());
+            Equal(0, store.Load().Devices.Count);
             var clientPath = Path.Combine(location, "RustDesk Portable", "rustdesk.exe");
-            store.Save(new AppSettings(DeviceProfile.Create("之前的电脑", "111222333"), clientPath));
-            var expected = new AppSettings(DeviceProfile.Create("家里的电脑", "123456789"), clientPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(new
+            {
+                device = new { name = "家里的电脑", id = "123456789" },
+                clientPath,
+                useDarkTheme = true,
+            }));
+            var old = store.Load();
+            Equal(DeviceProfile.Create("家里的电脑", "123456789"), old.Devices.Single());
+            var expected = old with { Devices = [..old.Devices, DeviceProfile.Create("工位电脑", "111222333")] };
             store.Save(expected);
-            Equal(expected, new SettingsStore(path).Load());
+            var loaded = new SettingsStore(path).Load();
+            Equal(true, loaded.Devices.SequenceEqual(expected.Devices));
+            Equal(clientPath, loaded.ClientPath);
+            Equal(true, loaded.UseDarkTheme);
             using var json = JsonDocument.Parse(File.ReadAllText(path));
-            Equal(2, json.RootElement.EnumerateObject().Count());
-            Equal(2, json.RootElement.GetProperty("device").EnumerateObject().Count());
+            Equal(false, json.RootElement.TryGetProperty("device", out _));
+            Equal(3, json.RootElement.EnumerateObject().Count());
+            Equal(2, json.RootElement.GetProperty("devices")[1].EnumerateObject().Count());
+            store.Save(loaded with { Devices = [] });
+            Equal(0, store.Load().Devices.Count);
         }),
         ("reports malformed settings to the caller", () =>
         {
