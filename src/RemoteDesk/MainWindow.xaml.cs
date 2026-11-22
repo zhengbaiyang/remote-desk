@@ -1,11 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
-using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
 
@@ -35,17 +33,33 @@ public partial class MainWindow : Window
         Activated += (_, _) => RefreshClientStatus();
     }
 
-    protected override void OnSourceInitialized(EventArgs e)
+    private void MinimizeWindow(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+
+    private void CloseWindow(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
+
+    private void ToggleMaximized(object sender, RoutedEventArgs e)
     {
-        base.OnSourceInitialized(e);
-        int darkTitleBar = 0;
-        _ = DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref darkTitleBar, sizeof(int));
+        if (WindowState == WindowState.Maximized)
+            SystemCommands.RestoreWindow(this);
+        else
+            SystemCommands.MaximizeWindow(this);
+    }
+
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+        bool maximized = WindowState == WindowState.Maximized;
+        MaximizeButton.Content = maximized ? "\uE923" : "\uE922";
+        MaximizeButton.ToolTip = maximized ? "还原" : "最大化";
+        AutomationProperties.SetName(MaximizeButton, (string)MaximizeButton.ToolTip);
     }
 
     private void ShowDevicesPage(object sender, RoutedEventArgs e)
     {
         SetCurrentPage(showSettings: false);
-        if (EditorView.Visibility == Visibility.Visible)
+        if (RemovalView.IsVisible)
+            KeepDeviceButton.Focus();
+        else if (EditorView.Visibility == Visibility.Visible)
             IdInput.Focus();
         else
             FocusDeviceAction();
@@ -70,6 +84,7 @@ public partial class MainWindow : Window
 
     private void EditDevice(object sender, RoutedEventArgs e)
     {
+        RemoveButton.Visibility = settings.Device is null ? Visibility.Collapsed : Visibility.Visible;
         EditorTitle.Text = settings.Device is null ? "添加电脑" : "编辑电脑";
         NameInput.Text = settings.Device?.Name ?? "家里的电脑";
         IdInput.Text = settings.Device?.Id ?? "";
@@ -88,6 +103,40 @@ public partial class MainWindow : Window
     {
         ShowDevice();
         FocusDeviceAction();
+    }
+
+    private void RequestRemoval(object sender, RoutedEventArgs e)
+    {
+        if (settings.Device is not { } device)
+            return;
+
+        RemovalMessage.Text = $"将从本机列表中移除「{device.Name}」。之后可以用设备 ID 重新添加。";
+        EditorView.Visibility = Visibility.Collapsed;
+        RemovalView.Visibility = Visibility.Visible;
+        KeepDeviceButton.Focus();
+    }
+
+    private void KeepDevice(object sender, RoutedEventArgs e)
+    {
+        RemovalView.Visibility = Visibility.Collapsed;
+        EditorView.Visibility = Visibility.Visible;
+        RemoveButton.Focus();
+    }
+
+    private void RemoveDevice(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            SaveSettings(settings with { Device = null });
+            ShowDevice();
+            ShowStatus("已从本机列表移除电脑。");
+            FocusDeviceAction();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            KeepDevice(sender, e);
+            ShowEditorMessage("无法保存更改，请检查本机用户目录的写入权限。", warning: true);
+        }
     }
 
     private void SaveDevice(object sender, RoutedEventArgs e)
@@ -121,6 +170,7 @@ public partial class MainWindow : Window
         var executable = RefreshClientStatus();
         if (executable is null)
         {
+            ShowSettingsPage(sender, e);
             ShowStatus("请下载 RustDesk，或选择你已有的 RustDesk 程序，再点击连接。", warning: true);
             return;
         }
@@ -132,7 +182,7 @@ public partial class MainWindow : Window
         }
         catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException)
         {
-            RefreshClientStatus();
+            ShowSettingsPage(sender, e);
             ShowStatus("无法启动 RustDesk。请重新选择程序，或检查 RustDesk 能否正常打开。", warning: true);
         }
     }
@@ -188,7 +238,8 @@ public partial class MainWindow : Window
         EmptyView.Visibility = device is null ? Visibility.Visible : Visibility.Collapsed;
         DeviceView.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
         EditorView.Visibility = Visibility.Collapsed;
-        ConnectionTip.Visibility = DeviceView.Visibility;
+        RemovalView.Visibility = Visibility.Collapsed;
+        ConnectionTip.Visibility = Visibility.Visible;
         SidebarEmpty.Visibility = EmptyView.Visibility;
         SidebarDevice.Visibility = DeviceView.Visibility;
         SidebarName.Text = device?.Name ?? "";
@@ -205,6 +256,7 @@ public partial class MainWindow : Window
         ClientDot.Fill = (Brush)FindResource(executable is null ? "Warning" : "Ready");
         ClientStatus.Text = executable is null ? "未找到 RustDesk" : "已找到 RustDesk";
         ClientStatus.ToolTip = executable;
+        LocalClientHint.Text = executable is null ? "需要选择或下载 RustDesk。" : "已检测到 RustDesk，可发起会话。";
         ClientPathText.Text = executable ?? "请先下载 RustDesk，或选择已有的 RustDesk 程序。";
         return executable;
     }
@@ -227,7 +279,4 @@ public partial class MainWindow : Window
         EditorMessage.Text = message;
         EditorMessage.Foreground = (Brush)FindResource(warning ? "Warning" : "Muted");
     }
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr window, uint attribute, ref int value, uint size);
 }

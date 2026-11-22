@@ -5,6 +5,10 @@
         WindowStartupLocation="CenterScreen" Background="#E9EEF2" Foreground="{DynamicResource Ink}"
         FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI" FontSize="14"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="59" ResizeBorderThickness="6" GlassFrameThickness="0"
+                      CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <ResourceDictionary Source="LightTheme.xaml" />
     </Window.Resources>
@@ -81,19 +85,26 @@
                     <RowDefinition Height="57" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="27,0">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="远程桌面" Foreground="{StaticResource Muted}" />
-                        <TextBlock Text="&#xE76C;" Style="{StaticResource Icon}" FontSize="9" Margin="10,0" Foreground="{StaticResource Muted}" />
-                        <TextBlock x:Name="CurrentPage" Text="我的电脑" FontWeight="SemiBold" />
-                    </StackPanel>
+                <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="24,0,7,0">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center"
+                                    WindowChrome.IsHitTestVisibleInChrome="True">
+                            <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeWindow"
+                                    AutomationProperties.Name="最小化" ToolTip="最小化" />
+                            <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;"
+                                    Click="ToggleMaximized" AutomationProperties.Name="最大化" ToolTip="最大化" />
+                            <Button Style="{StaticResource CaptionButton}" Content="&#xE8BB;" Click="CloseWindow"
+                                    AutomationProperties.Name="关闭窗口" ToolTip="关闭窗口" />
+                        </StackPanel>
+                        <TextBlock x:Name="CurrentPage" Text="我的电脑" FontWeight="SemiBold" FontSize="22" VerticalAlignment="Center" />
+                    </DockPanel>
                 </Border>
 
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
                     <StackPanel Margin="27,25,27,25" MaxWidth="950">
                         <Grid>
                             <StackPanel x:Name="DevicePage">
-                                <TextBlock Text="我的电脑" FontSize="31" FontWeight="SemiBold" Margin="0,0,0,22" />
+
 
                                 <Border x:Name="EmptyView" MinHeight="217" Padding="22" BorderBrush="{StaticResource Line}"
                                         BorderThickness="1" CornerRadius="19" Background="{StaticResource Card}">
@@ -150,6 +161,17 @@
                                     </Grid>
                                 </Border>
 
+                                <Border x:Name="RemovalView" Visibility="Collapsed" Padding="19,16" CornerRadius="19"
+                                        Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="移除这台电脑？" FontSize="20" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="RemovalMessage" TextWrapping="Wrap" Margin="0,12,0,20" Foreground="{StaticResource Muted}" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button x:Name="KeepDeviceButton" Content="保留电脑" Click="KeepDevice" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
+                                            <Button Content="确认移除" Click="RemoveDevice" Style="{StaticResource PrimaryButton}" AutomationProperties.AutomationId="ConfirmRemoval" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
                                 <Border x:Name="EditorView" Visibility="Collapsed" Padding="19,16" CornerRadius="19" Background="{StaticResource Card}"
                                         BorderBrush="{StaticResource Line}" BorderThickness="1">
                                     <StackPanel>
@@ -173,24 +195,39 @@
                                         </Grid>
                                         <TextBlock x:Name="EditorMessage" TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,9,0,10" AutomationProperties.LiveSetting="Polite" />
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button x:Name="RemoveButton" Content="移除电脑" Click="RequestRemoval" Foreground="#9A393D"
+                                                    Visibility="Collapsed" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
                                             <Button Content="取消" Click="CancelEdit" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
                                             <Button x:Name="SaveDeviceButton" Content="保存电脑" Click="SaveDevice" IsDefault="True" Style="{StaticResource PrimaryButton}"
                                                     AutomationProperties.AutomationId="SaveDevice" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
-                                <Border x:Name="ConnectionTip" Visibility="Collapsed" BorderBrush="{StaticResource Line}" BorderThickness="1"
-                                        Background="#F8FAFC" Padding="13,10" CornerRadius="12" Margin="0,13,0,0">
-                                    <DockPanel>
-                                        <TextBlock DockPanel.Dock="Left" Text="&#xE946;" Style="{StaticResource Icon}" FontSize="15" Margin="0,0,10,0" Foreground="#456581" />
-                                        <TextBlock Text="在 RustDesk 中选择「记住密码」，下次可一键连接。"
-                                                   TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="13" />
-                                    </DockPanel>
+                                <Border x:Name="ConnectionTip" Margin="0,18,0,0" Padding="18,14" CornerRadius="15"
+                                        BorderBrush="{StaticResource Line}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="连接准备" FontSize="16" FontWeight="SemiBold" />
+                                        <DockPanel Margin="0,12,0,12">
+                                            <Button DockPanel.Dock="Right" Content="配置客户端" Click="ShowSettingsPage" Margin="12,0,0,0"
+                                                    Style="{StaticResource QuietButton}" AutomationProperties.AutomationId="ConfigureClient" />
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="本机客户端" FontWeight="SemiBold" />
+                                                <TextBlock x:Name="LocalClientHint" Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                        <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+                                            <StackPanel>
+                                                <TextBlock Text="目标电脑" FontWeight="SemiBold" />
+                                                <TextBlock Text="保持电脑唤醒并运行 RustDesk。无人值守时，先在目标端设置固定密码。"
+                                                           Margin="0,3,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
                                 </Border>
                             </StackPanel>
 
                             <StackPanel x:Name="SettingsPage" Visibility="Collapsed">
-                                <TextBlock Text="RustDesk 设置" FontSize="31" FontWeight="SemiBold" />
+
                                 <TextBlock Text="查看或更换用于发起远程会话的本机程序。" Margin="1,5,0,18" Foreground="{StaticResource Muted}" />
                                 <Border CornerRadius="19" Padding="19" Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1">
                                     <StackPanel>
