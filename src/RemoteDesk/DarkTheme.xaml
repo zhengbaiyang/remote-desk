@@ -1,31 +1,64 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <SolidColorBrush x:Key="Ink" Color="#FFF6E9" />
-    <SolidColorBrush x:Key="Muted" Color="#E5D5C7" />
-    <SolidColorBrush x:Key="Line" Color="#52F3DDC6" />
-    <SolidColorBrush x:Key="Warning" Color="#FFB68D" />
-    <SolidColorBrush x:Key="Ready" Color="#91E2C9" />
-    <SolidColorBrush x:Key="Danger" Color="#FF9177" />
-    <SolidColorBrush x:Key="DangerInk" Color="#231611" />
-    <SolidColorBrush x:Key="Focus" Color="#F9BF9B" />
-    <SolidColorBrush x:Key="Quiet" Color="#BA53423B" />
-    <SolidColorBrush x:Key="Hover" Color="#FA6A5449" />
-    <SolidColorBrush x:Key="Pressed" Color="#FF584137" />
-    <SolidColorBrush x:Key="Primary" Color="#F3DDCA" />
-    <SolidColorBrush x:Key="PrimaryInk" Color="#231A16" />
-    <SolidColorBrush x:Key="PrimaryHover" Color="#FFE8D2" />
-    <SolidColorBrush x:Key="PrimaryPressed" Color="#CFAF99" />
-    <SolidColorBrush x:Key="DeviceSelected" Color="#36433B" />
-    <SolidColorBrush x:Key="Field" Color="#92E5BBA0" />
-    <SolidColorBrush x:Key="Input" Color="#D03C2F29" />
-    <SolidColorBrush x:Key="Selection" Color="#527D71" />
-    <SolidColorBrush x:Key="Rim" Color="#65FFECD6" />
-    <SolidColorBrush x:Key="WindowSurface" Color="#211E1D" />
-    <SolidColorBrush x:Key="Glyph" Color="#82425B4D" />
-    <SolidColorBrush x:Key="Rail" Color="#302A28" />
-    <SolidColorBrush x:Key="Frame" Color="#2C2725" />
+    <!-- Core Typography & Structural Tokens -->
+    <SolidColorBrush x:Key="Ink" Color="#F1F5F9" />
+    <SolidColorBrush x:Key="Muted" Color="#94A3B8" />
+    <SolidColorBrush x:Key="Line" Color="#223047" />
+    <SolidColorBrush x:Key="Rim" Color="#283852" />
+    <SolidColorBrush x:Key="CardBorder" Color="#26354D" />
+    <SolidColorBrush x:Key="Focus" Color="#38BDF8" />
+
+    <!-- Surfaces & Elevation -->
+    <SolidColorBrush x:Key="WindowSurface" Color="#0B0F17" />
+    <SolidColorBrush x:Key="Rail" Color="#0F1522" />
+    <SolidColorBrush x:Key="Frame" Color="#121926" />
     <LinearGradientBrush x:Key="Card" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#3C3430" Offset="0" />
-        <GradientStop Color="#322B29" Offset="1" />
+        <GradientStop Color="#172032" Offset="0" />
+        <GradientStop Color="#141C2B" Offset="1" />
     </LinearGradientBrush>
+    <SolidColorBrush x:Key="SurfaceElevated" Color="#1B263B" />
+    <SolidColorBrush x:Key="SurfaceSubtle" Color="#0E1420" />
+
+    <!-- Interactive & Form Controls -->
+    <SolidColorBrush x:Key="Quiet" Color="#1E293B" />
+    <SolidColorBrush x:Key="Hover" Color="#273549" />
+    <SolidColorBrush x:Key="Pressed" Color="#162030" />
+    <SolidColorBrush x:Key="Primary" Color="#22D3EE" />
+    <SolidColorBrush x:Key="PrimaryInk" Color="#04131D" />
+    <SolidColorBrush x:Key="PrimaryHover" Color="#38E0F8" />
+    <SolidColorBrush x:Key="PrimaryPressed" Color="#06B6D4" />
+    <SolidColorBrush x:Key="DeviceSelected" Color="#162B3A" />
+    <SolidColorBrush x:Key="Field" Color="#334563" />
+    <SolidColorBrush x:Key="Input" Color="#0D131F" />
+    <SolidColorBrush x:Key="Selection" Color="#265572" />
+    <SolidColorBrush x:Key="Glyph" Color="#142B38" />
+
+    <!-- Electric Cyan Accent System -->
+    <SolidColorBrush x:Key="Accent" Color="#22D3EE" />
+    <SolidColorBrush x:Key="AccentSoft" Color="#2222D3EE" />
+    <SolidColorBrush x:Key="AccentBorder" Color="#8822D3EE" />
+    <LinearGradientBrush x:Key="AccentGradient" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#22D3EE" Offset="0" />
+        <GradientStop Color="#0EA5E9" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentGradientHover" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#38E0F8" Offset="0" />
+        <GradientStop Color="#38BDF8" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentGradientPressed" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#06B6D4" Offset="0" />
+        <GradientStop Color="#0284C7" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="AccentInk" Color="#04131D" />
+
+    <!-- Semantic Status & Telemetry Badges -->
+    <SolidColorBrush x:Key="Ready" Color="#34D399" />
+    <SolidColorBrush x:Key="ReadySoft" Color="#2234D399" />
+    <SolidColorBrush x:Key="Warning" Color="#FBBF24" />
+    <SolidColorBrush x:Key="WarningSoft" Color="#22FBBF24" />
+    <SolidColorBrush x:Key="Danger" Color="#F87171" />
+    <SolidColorBrush x:Key="DangerSoft" Color="#24F87171" />
+    <SolidColorBrush x:Key="DangerInk" Color="#1F0909" />
+    <SolidColorBrush x:Key="PurpleAccent" Color="#A78BFA" />
+    <SolidColorBrush x:Key="PurpleSoft" Color="#24A78BFA" />
 </ResourceDictionary>

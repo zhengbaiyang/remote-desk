@@ -2,68 +2,68 @@
   <img src="src/RemoteDesk/Assets/remotedesk.png" alt="RemoteDesk 项目标志" width="80" height="80">
 </p>
 
-<h1 align="center">RemoteDesk 远程桌面</h1>
+<h1 align="center">RemoteDesk 远程桌面（校园网高刷 &amp; 跨网组网版）</h1>
 
-<p align="center">在 Windows 上保存家里电脑的 RustDesk ID，下次点一下「连接」就能发起远程会话。</p>
+<p align="center">面向 Windows 的双引擎远程桌面工作台：同校园网 / 局域网 120fps 高刷串流直连，跨外网通过 EasyTier P2P 虚拟组网与阿里云自建中继无缝穿透。</p>
 
 <p align="center">
   <a href="https://github.com/zhengbaiyang/remote-desk/releases/latest/download/RemoteDesk.Windows-win-Setup.exe"><strong>下载 Windows x64 安装包</strong></a> ·
-  <a href="#首次连接">首次连接</a> ·
+  <a href="#核心能力">核心能力</a> ·
+  <a href="docs/aliyun-server-guide.md">阿里云跨网节点指南</a> ·
   <a href="#从源码构建">从源码构建</a>
 </p>
 
-![RemoteDesk 实际运行界面。左侧列出已保存的电脑，右侧显示当前设备和本机 RustDesk 检测状态。](docs/images/desktop.png)
+![RemoteDesk 实际运行界面。](docs/images/desktop.png)
 
-## 首次连接
+## 核心能力
 
-准备两台电脑。**操作端**是你手边的 Windows 电脑，**目标端**是你想远程使用的那台电脑。
+- **双引擎无缝切换（远程控制）**：
+  - **高刷串流（Moonlight + Sunshine）**：支持 1080p 120fps / 2K 60fps / 省流与自定义分辨率、帧率、码率（2–150 Mbps）、HEVC / AV1 / H.264 硬件编解码。
+  - **办公模式（RustDesk）**：通过设备 ID 或直连地址快速接入，适合跨网协作、剪贴板共享与文件传输。
+- **托管式引擎中心（引擎与设置）**：
+  - 统一管理 **Moonlight**、**Sunshine**、**RustDesk** 与 **EasyTier** 四大开源引擎。
+  - 支持从 GitHub Release **一键安装**便携版至 `%LOCALAPPDATA%\RemoteDesk\engines\`、**导入本地压缩包**、**手动指定路径**及**卸载托管**。
+  - 内置 **国内 HTTPS 镜像加速**（失败时自动回退直连 GitHub），同时作用于引擎拉取与软件更新。
+- **本机被控中心（本机被控）**：
+  - 一键启停本机 Sunshine 高刷被控端与 RustDesk 办公被控端，快捷打开 Sunshine 控制台（`https://localhost:47990`）。
+  - 自动展示本机校园网 / 局域网 IPv4、IPv6 地址与主机名（支持一键复制），并识别 NVIDIA NVENC / Intel QSV / AMD AMF 硬件编码器。
+- **EasyTier P2P 跨网组网（网络节点）**：
+  - 保留校园网 / 局域网零服务器直连概览，同时提供 EasyTier P2P 虚拟组网控制面板（节点地址、网络名称、可掩码密钥、自动分配虚拟 IP、随软件自动启动）。
+  - 实时展示在线组网节点、虚拟 IPv4、`直连 (P2P)` / `中继 (Relay)` 状态与延迟，支持**一键添加到设备**并发起 Moonlight 高刷串流。
+  - 配套阿里云轻量服务器 3 分钟部署套件：[`server/docker-compose.yml`](server/docker-compose.yml)、[`server/deploy.sh`](server/deploy.sh)、[`server/.env.example`](server/.env.example) 与完整中文教程 [`docs/aliyun-server-guide.md`](docs/aliyun-server-guide.md)。
+- **GitHub Release 自动更新**：
+  - 支持自定义更新仓库源（默认 `zhengbaiyang/remote-desk`，可输入 `owner/repo` 或完整 GitHub HTTPS 链接）。
+  - **Velopack 安装版**：启动时及每 6 小时自动检测并后台下载，支持「立即重启更新」与国内镜像加速回退。
+  - **便携版 / 开发版**：同样自动检测仓库最新 Release，展示版本号与更新说明，支持一键「下载并安装最新版」或跳转发布页。
 
-| 在哪台电脑上 | 做什么 |
-| --- | --- |
-| 目标端 | 安装并打开 RustDesk，记下首页显示的设备 ID，保持电脑唤醒。需要无人值守时，可在 RustDesk 安全设置中设置固定密码。[RustDesk 官方下载](https://github.com/rustdesk/rustdesk/releases/latest) |
-| 操作端 | 安装 RustDesk，然后运行 RemoteDesk 的安装包。它已包含 .NET 运行时，安装后可以从开始菜单打开。[下载 RemoteDesk 安装包](https://github.com/zhengbaiyang/remote-desk/releases/latest/download/RemoteDesk.Windows-win-Setup.exe) |
+## 首次使用
 
-在 RemoteDesk 的「我的电脑」里点 **添加电脑**，输入名称和目标端的设备 ID，保存后点 **连接**。首次验证在 RustDesk 会话窗口完成。以后打开 RemoteDesk，可以从左侧列表选中这台电脑并发起连接。
+1. **安装引擎**：打开 RemoteDesk，进入「引擎与设置」，按需一键安装 **Moonlight**（控制端）、**Sunshine**（被控端）、**RustDesk**（办公端）或 **EasyTier**（跨网组网）。如访问 GitHub 较慢，可先填写国内 HTTPS 镜像前缀。
+2. **校园网 / 局域网直连**：在被控电脑打开「本机被控」启动 Sunshine 并复制本机 IPv4 / IPv6；在操作端「远程控制」添加电脑、发起首次配对后即可 120fps 直连。
+3. **跨外网 / 回家远控宿舍电脑**：按 [`docs/aliyun-server-guide.md`](docs/aliyun-server-guide.md) 在 2C2G 阿里云轻量服务器运行 `./server/deploy.sh`，随后在两端 RemoteDesk 的「网络节点」填入相同的网络名称、密钥与节点地址（`tcp://<公网IP>:11010`）并启动组网，在节点列表点击「添加到设备」即可跨网高刷连接。
 
-## 设备与连接
-
-- **设备管理**　在左侧点「＋」保存多台电脑，按添加顺序排列。选中一台即可查看设备 ID、连接或编辑。旧版保存的单台电脑会自动出现在列表中。
-- **界面外观**　点击顶部的月亮或太阳图标切换浅色与深色。程序会记住上次选择。
-- **自动识别 RustDesk**　启动、返回窗口或发起连接时，程序会检查常用安装目录、Windows 安装记录、RustDesk 服务和运行中的客户端。自定义安装位置也能通过安装记录识别。设置页会显示检测到的路径；未登记且未运行的便携版可以手动指定。
-- **目标端连不上**　首页的「已找到 RustDesk」表示操作端已找到客户端。请在会话窗口查看连接结果，并确认目标端已唤醒、RustDesk 正在运行。
-- **使用自建服务器**　在两端的 RustDesk 中填写同一套服务配置，再回到 RemoteDesk 点击连接。[RustDesk 客户端配置](https://rustdesk.com/docs/en/self-host/client-configuration/)
-
-设备名、设备 ID 和手动选择的程序路径保存在 `%LOCALAPPDATA%\RemoteDesk\settings.json`。密码由 RustDesk 管理。安装目录与这份配置分开存放。
-
-## 自动更新
-
-安装版在启动时及每隔六小时检查 GitHub 最新稳定版。发现新版后会后台下载并校验，下次启动时自动应用；也可以在「设置」中点「立即重启更新」。网络中断后可用「检查更新」重试。
-
-**从 v0.3.1 或更早的 ZIP 版升级**：先关闭旧版，运行一次新版安装包，以后从开始菜单打开 RemoteDesk。原来保存的电脑会自动读取。
+所有设备配置、引擎路径、EasyTier 参数、镜像前缀与更新仓库源保存在 `%LOCALAPPDATA%\RemoteDesk\settings.json`，与程序安装目录分离。
 
 ## 从源码构建
 
-在 Windows 上安装 .NET 8 SDK，克隆仓库后，在仓库根目录打开 PowerShell。
+在 Windows 上安装 .NET 8 SDK，克隆仓库后在根目录打开 PowerShell：
 
 ```powershell
-# 运行设备校验、配置存储和客户端启动参数检查
+# 编译 Release
+dotnet build src/RemoteDesk/RemoteDesk.csproj -c Release
+
+# 运行全部核心、引擎、EasyTier 与自动更新单元测试
 dotnet run --project tests/RemoteDesk.Checks/RemoteDesk.Checks.csproj -c Release
 
 # 启动桌面程序
 dotnet run --project src/RemoteDesk/RemoteDesk.csproj
 
-# 生成 Windows x64 安装包与更新文件
+# 生成 Windows x64 安装包与 Velopack 更新文件
 .\packaging\build.ps1
 ```
 
-构建产物位于 `artifacts/releases/<版本>/`。发布新版时，先递增项目文件中的 `Version` 并重新打包。把 `RemoteDesk.Windows-win-Setup.exe`、`releases.win.json` 和对应的 `*-full.nupkg` 一起上传到同一 GitHub Release，附件齐全后再将其发布为 Latest。设置里的自动更新使用这份清单。
-
-## 项目来源
-
-RemoteDesk 的设备管理界面使用 C# 和 WPF 实现。点击连接时，它调用本机的 `rustdesk --connect <设备ID>`。身份验证、画面传输、键鼠控制，以及 P2P 直连和中继选择，均由 RustDesk（AGPL-3.0）负责。[RustDesk 源码](https://github.com/rustdesk/rustdesk)
-
-项目早期对 P2P 打洞与低延迟传输的调研参考了 uu-remote-study。当前发行版使用 RustDesk 建立会话。[uu-remote-study 研究项目](https://github.com/numb747/uu-remote-study)
+构建产物位于 `artifacts/releases/<版本>/`。发布新版时递增 `src/RemoteDesk/RemoteDesk.csproj` 的 `Version` 并重新打包，将 `RemoteDesk.Windows-win-Setup.exe`、`releases.win.json` 和对应的 `*-full.nupkg` 一同上传至 GitHub Release 并设为 Latest。
 
 ## 开源许可
 
-RemoteDesk 自有代码、文档和项目图标采用 [MIT 许可证](LICENSE)。安装与自动更新使用 Velopack，发行包包含其 MIT 许可声明和 .NET 运行时声明。RustDesk 作为独立安装的客户端使用，沿用上游 AGPL-3.0 许可。[Velopack 源码](https://github.com/velopack/velopack)
+RemoteDesk 自有代码、部署脚本、文档和图标采用 [MIT 许可证](LICENSE)。安装与热更新由 Velopack（MIT）驱动；Moonlight（GPL-3.0）、Sunshine（GPL-3.0）、RustDesk（AGPL-3.0）与 EasyTier（Apache-2.0）作为独立托管外部进程运行，各自遵循其上游开源协议。

@@ -1,0 +1,102 @@
+# RemoteDesk 阿里云自建节点部署编排（适配 2C2G 轻量应用服务器 / ECS）
+# 默认仅启动 EasyTier P2P 引导与私有中继节点；
+# 如需同时启动 RustDesk (hbbs/hbbr)，请使用 `bash server/deploy.sh --with-rustdesk`
+# 或执行 `docker compose --profile rustdesk up -d`
+
+services:
+  easytier:
+    image: easytier/easytier:latest
+    container_name: remotedesk-easytier
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      - TZ=Asia/Shanghai
+    command:
+      - "--network-name"
+      - "${EASYTIER_NETWORK_NAME:?EASYTIER_NETWORK_NAME must be set in .env}"
+      - "--network-secret"
+      - "${EASYTIER_NETWORK_SECRET:?EASYTIER_NETWORK_SECRET must be set in .env}"
+      - "--hostname"
+      - "aliyun-relay"
+      - "--listeners"
+      - "tcp://0.0.0.0:${EASYTIER_PORT:-11010}"
+      - "udp://0.0.0.0:${EASYTIER_PORT:-11010}"
+      - "ws://0.0.0.0:${EASYTIER_WS_PORT:-11011}"
+      - "--no-tun"
+      - "--relay-network-whitelist"
+      - "${EASYTIER_NETWORK_NAME:?EASYTIER_NETWORK_NAME must be set in .env}"
+    ports:
+      - "${EASYTIER_PORT:-11010}:${EASYTIER_PORT:-11010}/tcp"
+      - "${EASYTIER_PORT:-11010}:${EASYTIER_PORT:-11010}/udp"
+      - "${EASYTIER_WS_PORT:-11011}:${EASYTIER_WS_PORT:-11011}/tcp"
+    networks:
+      - remotedesk-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  hbbs:
+    image: rustdesk/rustdesk-server:latest
+    container_name: remotedesk-hbbs
+    profiles:
+      - rustdesk
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      - TZ=Asia/Shanghai
+    # -k _ 强制开启密钥校验，未配置公钥的第三方客户端无法劫持或蹭用中继
+    command:
+      - "hbbs"
+      - "-r"
+      - "${RUSTDESK_RELAY_HOST:-${PUBLIC_HOST:?PUBLIC_HOST must be set in .env}}:21117"
+      - "-k"
+      - "_"
+    ports:
+      - "21115:21115/tcp"
+      - "21116:21116/tcp"
+      - "21116:21116/udp"
+      - "21118:21118/tcp"
+    volumes:
+      - ./data/rustdesk:/root
+    depends_on:
+      - hbbr
+    networks:
+      - remotedesk-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  hbbr:
+    image: rustdesk/rustdesk-server:latest
+    container_name: remotedesk-hbbr
+    profiles:
+      - rustdesk
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      - TZ=Asia/Shanghai
+    # -k _ 与 hbbs 共享 ./data/rustdesk 下的密钥对，拒绝未授权中继流量
+    command:
+      - "hbbr"
+      - "-k"
+      - "_"
+    ports:
+      - "21117:21117/tcp"
+      - "21119:21119/tcp"
+    volumes:
+      - ./data/rustdesk:/root
+    networks:
+      - remotedesk-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  remotedesk-net:
+    driver: bridge

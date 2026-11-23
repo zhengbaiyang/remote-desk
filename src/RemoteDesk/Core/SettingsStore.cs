@@ -7,9 +7,34 @@ namespace RemoteDesk;
 internal sealed record AppSettings
 {
     public IReadOnlyList<DeviceProfile> Devices { get; init; } = [];
+
     public string? ClientPath { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MoonlightPath { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SunshinePath { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EasyTierPath { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public EasyTierConfig? EasyTier { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DownloadMirrorPrefix { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? UpdateRepository { get; init; }
+
+    public bool UseDarkTheme { get; init; } = true;
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool UseDarkTheme { get; init; }
+    public bool HostModeEnabled { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public StreamOptions? DefaultStream { get; init; }
 
     [JsonPropertyName("device")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -34,7 +59,17 @@ internal sealed class SettingsStore(string path)
                 throw new JsonException("设备列表包含空记录。");
             if (devices.Count == 0 && stored.LegacyDevice is { } legacy)
                 devices = [legacy];
-            return stored with { Devices = devices, LegacyDevice = null };
+            var validatedDefaultStream = stored.DefaultStream?.Validate();
+            var validatedEasyTier = stored.EasyTier is { Enabled: true } enabledEasyTier
+                ? EasyTierConfig.Validate(enabledEasyTier)
+                : stored.EasyTier;
+            return stored with
+            {
+                Devices = devices,
+                DefaultStream = validatedDefaultStream,
+                EasyTier = validatedEasyTier,
+                LegacyDevice = null,
+            };
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -44,6 +79,11 @@ internal sealed class SettingsStore(string path)
 
     public void Save(AppSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.DefaultStream?.Validate();
+        if (settings.EasyTier is { Enabled: true } enabledEasyTier)
+            EasyTierConfig.Validate(enabledEasyTier);
+
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try

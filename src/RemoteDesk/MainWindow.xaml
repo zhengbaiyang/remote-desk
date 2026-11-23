@@ -1,33 +1,212 @@
 <Window x:Class="RemoteDesk.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RemoteDesk · 远程桌面" Icon="Assets/remotedesk.ico" Width="1080" Height="610" MinWidth="760" MinHeight="550"
-        WindowStartupLocation="CenterScreen" Background="{DynamicResource WindowSurface}" Foreground="{DynamicResource Ink}"
-        FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI" FontSize="14"
+        Title="RemoteDesk · 远程桌面" Icon="Assets/remotedesk.ico"
+        Width="1180" Height="720" MinWidth="920" MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource WindowSurface}" Foreground="{DynamicResource Ink}"
+        FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI" FontSize="13.5"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="42" ResizeBorderThickness="6" GlassFrameThickness="0"
+        <WindowChrome CaptionHeight="46" ResizeBorderThickness="6" GlassFrameThickness="0"
                       CornerRadius="12" UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
+
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="LightTheme.xaml" />
+                <ResourceDictionary Source="DarkTheme.xaml" />
                 <ResourceDictionary Source="GlassControls.xaml" />
             </ResourceDictionary.MergedDictionaries>
+
+            <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+            <!-- Compact action button variants -->
+            <Style x:Key="CompactQuietButton" TargetType="Button" BasedOn="{StaticResource QuietButton}">
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="Padding" Value="12,5" />
+                <Setter Property="FontSize" Value="12.5" />
+            </Style>
+
+            <Style x:Key="CompactPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="Padding" Value="14,5" />
+                <Setter Property="FontSize" Value="12.5" />
+            </Style>
+
+            <!-- PasswordBox matching DeviceField styling in dark and light themes -->
+            <Style x:Key="PasswordField" TargetType="PasswordBox">
+                <Setter Property="Background" Value="{DynamicResource Input}" />
+                <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+                <Setter Property="CaretBrush" Value="{DynamicResource Ink}" />
+                <Setter Property="SelectionBrush" Value="{DynamicResource Selection}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource Field}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="MinHeight" Value="40" />
+                <Setter Property="Padding" Value="12,0,38,0" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="SnapsToDevicePixels" Value="True" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="PasswordBox">
+                            <Border x:Name="FieldSurface" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="10" SnapsToDevicePixels="True">
+                                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="FieldSurface" Property="Opacity" Value="0.5" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource AccentBorder}" />
+                    </Trigger>
+                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource Focus}" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Custom transparent ListBox template so IsEnabled=False dims cleanly in dark mode -->
+            <Style x:Key="DarkSafeDeviceList" TargetType="ListBox" BasedOn="{StaticResource SavedDeviceList}">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListBox">
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    SnapsToDevicePixels="True">
+                                <ScrollViewer Focusable="False" Padding="{TemplateBinding Padding}"
+                                              HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}"
+                                              VerticalScrollBarVisibility="{TemplateBinding ScrollViewer.VerticalScrollBarVisibility}">
+                                    <ScrollViewer.Resources>
+                                        <Style TargetType="ScrollBar" BasedOn="{StaticResource GlassScrollBar}" />
+                                    </ScrollViewer.Resources>
+                                    <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                </ScrollViewer>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.5" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="InlineLinkButton" TargetType="Button">
+                <Setter Property="Foreground" Value="{DynamicResource Accent}" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="4,2" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="FontSize" Value="12.5" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="6">
+                                <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentSoft}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Modern Cyan Slider for Stream Bitrate -->
+            <Style x:Key="ModernSlider" TargetType="Slider">
+                <Setter Property="MinHeight" Value="24" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="IsMoveToPointEnabled" Value="True" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Slider">
+                            <Grid VerticalAlignment="Center" SnapsToDevicePixels="True">
+                                <Border Height="6" CornerRadius="3" Background="{DynamicResource SurfaceSubtle}"
+                                        BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" VerticalAlignment="Center" />
+                                <Track x:Name="PART_Track">
+                                    <Track.DecreaseRepeatButton>
+                                        <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                            <RepeatButton.Template>
+                                                <ControlTemplate TargetType="RepeatButton">
+                                                    <Border Height="6" CornerRadius="3,0,0,3" Background="{DynamicResource AccentGradient}" VerticalAlignment="Center" />
+                                                </ControlTemplate>
+                                            </RepeatButton.Template>
+                                        </RepeatButton>
+                                    </Track.DecreaseRepeatButton>
+                                    <Track.IncreaseRepeatButton>
+                                        <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                            <RepeatButton.Template>
+                                                <ControlTemplate TargetType="RepeatButton">
+                                                    <Border Height="6" Background="Transparent" VerticalAlignment="Center" />
+                                                </ControlTemplate>
+                                            </RepeatButton.Template>
+                                        </RepeatButton>
+                                    </Track.IncreaseRepeatButton>
+                                    <Track.Thumb>
+                                        <Thumb Width="16" Height="16" Cursor="Hand">
+                                            <Thumb.Template>
+                                                <ControlTemplate TargetType="Thumb">
+                                                    <Border x:Name="Knob" Width="16" Height="16" CornerRadius="8"
+                                                            Background="{DynamicResource Accent}"
+                                                            BorderBrush="{DynamicResource SurfaceElevated}" BorderThickness="2" />
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="Knob" Property="Background" Value="{DynamicResource PrimaryHover}" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsDragging" Value="True">
+                                                            <Setter TargetName="Knob" Property="Background" Value="{DynamicResource PrimaryPressed}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Thumb.Template>
+                                        </Thumb>
+                                    </Track.Thumb>
+                                </Track>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </Window.Resources>
 
-    <Grid>
+    <Grid x:Name="RootLayout">
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Border Background="{DynamicResource Rail}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="16,0,6,0">
+        <!-- Custom Title Bar -->
+        <Border Grid.Row="0" Background="{DynamicResource Rail}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="14,0,6,0">
             <DockPanel LastChildFill="True">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="ThemeButton" Click="ToggleTheme" Style="{StaticResource CaptionButton}" Margin="0,0,6,0" />
+                    <Button x:Name="TitleStatusPill" Click="ShowEnginesPage" Style="{StaticResource CompactQuietButton}"
+                            WindowChrome.IsHitTestVisibleInChrome="True" Margin="0,0,8,0"
+                            MinHeight="28" Padding="10,3" ToolTip="查看托管引擎状态"
+                            AutomationProperties.AutomationId="TitleEngineStatus">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse x:Name="TitleStatusDot" Width="7" Height="7" VerticalAlignment="Center" Margin="0,0,6,0"
+                                     Fill="{DynamicResource Warning}" />
+                            <TextBlock x:Name="TitleStatusText" Text="引擎就绪 0/4" FontSize="12" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="ThemeButton" Click="ToggleTheme" Style="{StaticResource CaptionButton}"
+                            AutomationProperties.AutomationId="ThemeToggle" Margin="0,0,6,0" />
                     <Border Background="{DynamicResource Line}" Width="1" Height="16" Margin="0,0,5,0" />
                     <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeWindow"
                             AutomationProperties.Name="最小化" ToolTip="最小化" />
@@ -36,222 +215,1494 @@
                     <Button Style="{StaticResource CloseButton}" Content="&#xE8BB;" Click="CloseWindow"
                             AutomationProperties.Name="关闭窗口" ToolTip="关闭窗口" />
                 </StackPanel>
+
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Image Source="Assets/remotedesk.png" Width="25" Height="25" RenderOptions.BitmapScalingMode="HighQuality" />
-                    <TextBlock Text="RemoteDesk" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="8,0,0,0" />
+                    <Image Source="Assets/remotedesk.png" Width="24" Height="24" RenderOptions.BitmapScalingMode="HighQuality" />
+                    <TextBlock Text="RemoteDesk" FontWeight="Bold" FontSize="14.5" VerticalAlignment="Center" Margin="9,0,0,0" />
+                    <Border Background="{DynamicResource AccentSoft}" BorderBrush="{DynamicResource AccentBorder}"
+                            BorderThickness="1" CornerRadius="6" Padding="7,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="校园网高刷版" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+                    </Border>
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <Grid Grid.Row="1" Margin="16" MaxWidth="1480">
+        <!-- Main Workspace Body -->
+        <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="224" />
-                <ColumnDefinition Width="14" />
+                <ColumnDefinition Width="210" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Border Style="{StaticResource GlassRail}" CornerRadius="20" Padding="9">
+            <!-- Left Navigation Rail -->
+            <Border Grid.Column="0" Background="{DynamicResource Rail}" BorderBrush="{DynamicResource Line}"
+                    BorderThickness="0,0,1,0" Padding="12,16,12,14">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <DockPanel Margin="0,0,0,9">
-                        <Button x:Name="AddFromListButton" DockPanel.Dock="Right" Style="{StaticResource SmallIconButton}"
-                                Click="AddDevice" Content="&#xE710;" ToolTip="添加电脑" AutomationProperties.Name="添加电脑"
-                                AutomationProperties.AutomationId="AddFromList" />
-                        <Button x:Name="DevicesNav" Style="{StaticResource ListNavigation}" Click="ShowDevicesPage" Tag="Selected">
-                            <DockPanel>
-                                <TextBlock x:Name="DeviceCount" DockPanel.Dock="Right" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
-                                <TextBlock Text="我的电脑" FontWeight="Bold" FontSize="14" />
-                            </DockPanel>
-                        </Button>
-                    </DockPanel>
 
-                    <Grid Grid.Row="1">
-                        <ListBox x:Name="DeviceList" SelectionChanged="DeviceSelectionChanged"
-                                 Style="{StaticResource SavedDeviceList}" ItemContainerStyle="{StaticResource SavedDeviceRow}"
-                                 AutomationProperties.Name="已保存的电脑">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="32" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <Border Background="{DynamicResource Glyph}" CornerRadius="9" Width="30" Height="30"
-                                                VerticalAlignment="Center" HorizontalAlignment="Left">
-                                            <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" Foreground="{DynamicResource Ready}" />
-                                        </Border>
-                                        <StackPanel Grid.Column="1" Margin="9,0,0,0">
-                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding Name}" />
-                                            <TextBlock Text="{Binding Id}" FontSize="11" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding Id}" Margin="0,1,0,0" />
-                                        </StackPanel>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <TextBlock x:Name="DeviceListEmpty" Text="还没有设备" Foreground="{DynamicResource Muted}" Margin="10,11,0,0"
-                                   VerticalAlignment="Top" IsHitTestVisible="False" />
-                    </Grid>
+                    <TextBlock Text="工作台" Style="{StaticResource SectionHeader}" Margin="10,0,0,10" />
 
-                    <Border Grid.Row="2" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,8,0,0" Margin="0,8,0,0">
-                        <Button x:Name="SettingsNav" Click="ShowSettingsPage" Style="{StaticResource ListNavigation}"
-                                AutomationProperties.Name="设置">
+                    <StackPanel Grid.Row="1">
+                        <Button x:Name="RemoteNav" Style="{StaticResource NavRailButton}" Tag="Selected"
+                                Click="ShowRemotePage" Margin="0,0,0,4"
+                                AutomationProperties.AutomationId="NavRemote" AutomationProperties.Name="远程控制">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="&#xE713;" Style="{StaticResource Icon}" Margin="0,0,9,0" />
-                                <TextBlock Text="设置" />
+                                <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="15" Margin="4,0,11,0" />
+                                <TextBlock Text="远程控制" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
-                    </Border>
+
+                        <Button x:Name="HostNav" Style="{StaticResource NavRailButton}"
+                                Click="ShowHostPage" Margin="0,0,0,4"
+                                AutomationProperties.AutomationId="NavHost" AutomationProperties.Name="本机被控">
+                            <DockPanel LastChildFill="True">
+                                <Ellipse x:Name="HostNavDot" DockPanel.Dock="Right" Width="7" Height="7"
+                                         VerticalAlignment="Center" Fill="{DynamicResource Muted}" Opacity="0.45" />
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE977;" Style="{StaticResource Icon}" FontSize="15" Margin="4,0,11,0" />
+                                    <TextBlock Text="本机被控" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Button>
+
+                        <Button x:Name="NetworkNav" Style="{StaticResource NavRailButton}"
+                                Click="ShowNetworkPage" Margin="0,0,0,4"
+                                AutomationProperties.AutomationId="NavNetwork" AutomationProperties.Name="网络节点">
+                            <DockPanel LastChildFill="True">
+                                <Ellipse x:Name="NetworkNavDot" DockPanel.Dock="Right" Width="7" Height="7"
+                                         VerticalAlignment="Center" Fill="{DynamicResource Muted}" Opacity="0.45" />
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE968;" Style="{StaticResource Icon}" FontSize="15" Margin="4,0,11,0" />
+                                    <TextBlock Text="网络节点" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Button>
+
+                        <Button x:Name="EnginesNav" Style="{StaticResource NavRailButton}"
+                                Click="ShowEnginesPage" Margin="0,0,0,4"
+                                AutomationProperties.AutomationId="NavEngines" AutomationProperties.Name="引擎与设置">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE713;" Style="{StaticResource Icon}" FontSize="15" Margin="4,0,11,0" />
+                                <TextBlock Text="引擎与设置" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Compact Engine Readiness Footer -->
+                    <Button Grid.Row="2" Click="ShowEnginesPage" Cursor="Hand" FocusVisualStyle="{x:Null}"
+                            ToolTip="打开托管引擎中心" AutomationProperties.AutomationId="RailEngineSummary"
+                            HorizontalContentAlignment="Stretch" Padding="0">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="FooterCard" Style="{StaticResource SubPanelCard}" Padding="12,10">
+                                    <ContentPresenter />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="FooterCard" Property="BorderBrush" Value="{DynamicResource AccentBorder}" />
+                                        <Setter TargetName="FooterCard" Property="Background" Value="{DynamicResource Hover}" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                        <StackPanel>
+                            <DockPanel Margin="0,0,0,8">
+                                <TextBlock x:Name="RailEngineCount" DockPanel.Dock="Right" Text="0/4"
+                                           FontSize="12" FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+                                <TextBlock Text="引擎就绪" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource Ink}" />
+                            </DockPanel>
+                            <UniformGrid Columns="4">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                    <Ellipse x:Name="RailMoonlightDot" Width="6" Height="6" Margin="0,0,4,0" Fill="{DynamicResource Warning}" />
+                                    <TextBlock Text="ML" FontSize="11" Foreground="{DynamicResource Muted}" ToolTip="Moonlight" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Ellipse x:Name="RailSunshineDot" Width="6" Height="6" Margin="0,0,4,0" Fill="{DynamicResource Warning}" />
+                                    <TextBlock Text="SS" FontSize="11" Foreground="{DynamicResource Muted}" ToolTip="Sunshine" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <Ellipse x:Name="RailRustDeskDot" Width="6" Height="6" Margin="0,0,4,0" Fill="{DynamicResource Warning}" />
+                                    <TextBlock Text="RD" FontSize="11" Foreground="{DynamicResource Muted}" ToolTip="RustDesk" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Ellipse x:Name="RailEasyTierDot" Width="6" Height="6" Margin="0,0,4,0" Fill="{DynamicResource Warning}" />
+                                    <TextBlock Text="ET" FontSize="11" Foreground="{DynamicResource Muted}" ToolTip="EasyTier" />
+                                </StackPanel>
+                            </UniformGrid>
+                        </StackPanel>
+                    </Button>
                 </Grid>
             </Border>
 
-            <Border Grid.Column="2" Style="{StaticResource GlassFrame}">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="24,15,20,15">
-                        <DockPanel>
-                            <Button DockPanel.Dock="Right" Click="ShowSettingsPage" Style="{StaticResource QuietButton}"
-                                    VerticalAlignment="Center" AutomationProperties.AutomationId="ClientSettings"
-                                    ToolTip="查看本机 RustDesk 设置">
-                                <StackPanel Orientation="Horizontal">
-                                    <Ellipse x:Name="ClientDot" Width="7" Height="7" VerticalAlignment="Center" Margin="0,0,7,0" />
-                                    <TextBlock x:Name="ClientStatus" FontSize="12" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+            <!-- Right Main Content Area -->
+            <Grid Grid.Column="1" Background="{DynamicResource WindowSurface}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- PAGE 1: 远程控制 -->
+                <Grid x:Name="RemoteControlPage" Grid.Row="0" Margin="16,14,16,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="254" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left Column: Saved Devices List -->
+                    <Border Grid.Column="0" Background="{DynamicResource Frame}" BorderBrush="{DynamicResource CardBorder}"
+                            BorderThickness="1" CornerRadius="14" Padding="12">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <DockPanel Margin="2,2,2,12">
+                                <Button x:Name="AddFromListButton" DockPanel.Dock="Right" Click="AddDevice"
+                                        Style="{StaticResource CompactQuietButton}" MinHeight="30" Padding="10,4"
+                                        ToolTip="添加新电脑" AutomationProperties.Name="添加电脑"
+                                        AutomationProperties.AutomationId="AddFromList">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE710;" Style="{StaticResource Icon}" FontSize="11" Margin="0,0,5,0"
+                                                   Foreground="{DynamicResource Accent}" />
+                                        <TextBlock Text="添加" FontSize="12" FontWeight="SemiBold" />
+                                    </StackPanel>
+                                </Button>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="我的设备" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource StatusPillBorder}" Margin="8,0,0,0" Padding="7,2">
+                                        <TextBlock x:Name="DeviceCount" Text="0 台" FontSize="11" Foreground="{DynamicResource Muted}" />
+                                    </Border>
                                 </StackPanel>
-                            </Button>
-                            <TextBlock x:Name="CurrentPage" Text="设备详情" FontWeight="Bold" FontSize="23" VerticalAlignment="Center" />
-                        </DockPanel>
+                            </DockPanel>
+
+                            <Grid Grid.Row="1">
+                                <ListBox x:Name="DeviceList" SelectionChanged="DeviceSelectionChanged"
+                                         Style="{StaticResource DarkSafeDeviceList}" ItemContainerStyle="{StaticResource SavedDeviceRow}"
+                                         AutomationProperties.Name="已保存的电脑">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="34" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border x:Name="RowGlyph" Background="{DynamicResource Glyph}" CornerRadius="9"
+                                                        Width="32" Height="32" VerticalAlignment="Center" HorizontalAlignment="Left">
+                                                    <TextBlock x:Name="RowIcon" Text="&#xE7F4;" Style="{StaticResource Icon}"
+                                                               FontSize="15" Foreground="{DynamicResource Accent}" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center">
+                                                    <DockPanel LastChildFill="True">
+                                                        <Border x:Name="ModePill" DockPanel.Dock="Right" CornerRadius="5"
+                                                                Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                                                Background="{DynamicResource AccentSoft}">
+                                                            <TextBlock x:Name="ModePillText" Text="{Binding ModeBadgeText}"
+                                                                       FontSize="10.5" FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13.5"
+                                                                   TextTrimming="CharacterEllipsis" ToolTip="{Binding Name}" VerticalAlignment="Center" />
+                                                    </DockPanel>
+                                                    <TextBlock Text="{Binding TargetSubtitle}" FontSize="11.5"
+                                                               Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding TargetSubtitle}" Margin="0,2,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding IsStreamMode}" Value="False">
+                                                    <Setter TargetName="RowIcon" Property="Foreground" Value="{DynamicResource PurpleAccent}" />
+                                                    <Setter TargetName="ModePill" Property="Background" Value="{DynamicResource PurpleSoft}" />
+                                                    <Setter TargetName="ModePillText" Property="Foreground" Value="{DynamicResource PurpleAccent}" />
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <StackPanel x:Name="DeviceListEmpty" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                            Margin="12" IsHitTestVisible="False">
+                                    <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="28"
+                                               Foreground="{DynamicResource Muted}" Opacity="0.5" />
+                                    <TextBlock Text="暂无保存的电脑" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" Margin="0,8,0,2" />
+                                    <TextBlock Text="点击上方「添加」创建设备" FontSize="11.5"
+                                               Foreground="{DynamicResource Muted}" Opacity="0.8" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
                     </Border>
 
-                    <ScrollViewer Grid.Row="1" Margin="8,0,5,9" VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                    <!-- Right Column: Rich Device Dashboard / Editor / Empty State -->
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                  Focusable="False" Padding="0,0,4,0">
                         <ScrollViewer.Resources>
                             <Style TargetType="ScrollBar" BasedOn="{StaticResource GlassScrollBar}" />
                         </ScrollViewer.Resources>
-                        <StackPanel Margin="15,18,17,16" MaxWidth="1150">
-                            <Grid>
-                                <Grid x:Name="DevicePage">
-                                    <Border x:Name="EmptyView" Style="{StaticResource GlassCard}" MinHeight="244">
-                                        <StackPanel VerticalAlignment="Center">
-                                            <Border Style="{StaticResource DeviceGlyph}">
-                                                <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="29" />
-                                            </Border>
-                                            <TextBlock Text="还没有保存的电脑" FontSize="23" FontWeight="Bold" Margin="0,14,0,4" />
-                                            <TextBlock Text="在目标电脑的 RustDesk 首页查看设备 ID。" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" />
-                                            <Button x:Name="AddDeviceButton" Content="添加电脑" Click="AddDevice" IsDefault="True" Margin="0,18,0,0"
-                                                    Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" AutomationProperties.AutomationId="AddDevice" />
-                                        </StackPanel>
-                                    </Border>
 
-                                    <Border x:Name="DeviceView" Visibility="Collapsed" Style="{StaticResource GlassCard}" MinHeight="244">
-                                        <Grid>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="*" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <Border Style="{StaticResource DeviceGlyph}">
-                                                <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="29" />
-                                            </Border>
-                                            <StackPanel Grid.Row="1" Margin="0,14,0,18">
-                                                <TextBlock x:Name="DeviceNameText" FontSize="27" FontWeight="Bold" TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
-                                                <TextBlock x:Name="DeviceIdText" Margin="0,6,0,0" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                        <Grid>
+                            <!-- 1. Empty Hero State -->
+                            <Border x:Name="EmptyView" Style="{StaticResource DashboardCard}" Padding="28">
+                                <StackPanel VerticalAlignment="Center" MaxWidth="620" HorizontalAlignment="Left">
+                                    <Border Style="{StaticResource DeviceGlyph}">
+                                        <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="28" />
+                                    </Border>
+                                    <TextBlock Text="开启低延迟校园网远程控制" FontSize="24" FontWeight="Bold" Margin="0,16,0,6" />
+                                    <TextBlock Text="支持 Moonlight + Sunshine 120fps 高刷串流与 RustDesk 办公双模式，无需公网中转即可在校园网与局域网直连。"
+                                               Foreground="{DynamicResource Muted}" TextWrapping="Wrap" LineHeight="21" />
+
+                                    <Grid Margin="0,20,0,22">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="12" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Style="{StaticResource SubPanelCard}">
+                                            <StackPanel>
+                                                <TextBlock Text="高刷串流 · Moonlight" FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+                                                <TextBlock Text="支持 1080p 120fps / 2K 60fps 与 HEVC/AV1 硬件解码，低延迟操控。"
+                                                           FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="2" Orientation="Horizontal">
-                                                <Button x:Name="ConnectButton" Click="ConnectDevice" IsDefault="True" Style="{StaticResource PrimaryButton}"
-                                                        MinWidth="110" AutomationProperties.Name="连接" AutomationProperties.AutomationId="ConnectDevice">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Text="连接" VerticalAlignment="Center" />
-                                                        <TextBlock Text="&#xE72A;" Style="{StaticResource Icon}" FontSize="13" Margin="10,0,0,0" />
-                                                    </StackPanel>
-                                                </Button>
-                                                <Button Content="编辑" Click="EditDevice" Style="{StaticResource QuietButton}" Margin="8,0,0,0"
-                                                        AutomationProperties.Name="编辑电脑" AutomationProperties.AutomationId="EditDevice" />
+                                        </Border>
+                                        <Border Grid.Column="2" Style="{StaticResource SubPanelCard}">
+                                            <StackPanel>
+                                                <TextBlock Text="办公模式 · RustDesk" FontWeight="SemiBold" Foreground="{DynamicResource PurpleAccent}" />
+                                                <TextBlock Text="通过设备 ID 或直连地址快速接入，适合日常办公、跨网协作与文件传输。"
+                                                           FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="AddDeviceButton" Click="AddDevice" IsDefault="True"
+                                                Style="{StaticResource HeroConnectButton}"
+                                                AutomationProperties.AutomationId="AddDevice">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="&#xE710;" Style="{StaticResource Icon}" FontSize="14" Margin="0,0,8,0" />
+                                                <TextBlock Text="添加第一台电脑" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Content="查看托管引擎中心" Click="ShowEnginesPage"
+                                                Style="{StaticResource QuietButton}" MinHeight="46" Margin="10,0,0,0" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 2. Rich Device Dashboard -->
+                            <StackPanel x:Name="DeviceView" Visibility="Collapsed">
+                                <!-- Header Card -->
+                                <Border Style="{StaticResource DashboardCard}" Padding="18,16" Margin="0,0,0,12">
+                                    <DockPanel LastChildFill="True">
+                                        <Button DockPanel.Dock="Right" Click="EditDevice" Style="{StaticResource QuietButton}"
+                                                VerticalAlignment="Center" AutomationProperties.Name="编辑电脑"
+                                                AutomationProperties.AutomationId="EditDevice">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="&#xE70F;" Style="{StaticResource Icon}" FontSize="13" Margin="0,0,6,0" />
+                                                <TextBlock Text="编辑" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Style="{StaticResource DeviceGlyph}" Width="52" Height="52">
+                                                <TextBlock Text="&#xE7F4;" Style="{StaticResource Icon}" FontSize="25" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Margin="14,0,12,0" VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock x:Name="DeviceNameText" FontSize="21" FontWeight="Bold"
+                                                               TextTrimming="CharacterEllipsis" MaxWidth="360" VerticalAlignment="Center"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                    <Border x:Name="DeviceActiveModeBadge" CornerRadius="6" Padding="8,2" Margin="10,0,0,0"
+                                                            VerticalAlignment="Center" Background="{DynamicResource AccentSoft}">
+                                                        <TextBlock x:Name="DeviceActiveModeText" Text="高刷串流" FontSize="11.5"
+                                                                   FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <WrapPanel Margin="0,7,0,0">
+                                                    <Border x:Name="DeviceHostPill" Style="{StaticResource StatusPillBorder}" Margin="0,0,8,2">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="&#xE968;" Style="{StaticResource Icon}" FontSize="11"
+                                                                       Foreground="{DynamicResource Accent}" Margin="0,0,6,0" />
+                                                            <TextBlock x:Name="DeviceHostText" FontSize="12" Foreground="{DynamicResource Ink}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <Border x:Name="DeviceIdPill" Style="{StaticResource StatusPillBorder}" Margin="0,0,8,2">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="&#xE77B;" Style="{StaticResource Icon}" FontSize="11"
+                                                                       Foreground="{DynamicResource PurpleAccent}" Margin="0,0,6,0" />
+                                                            <TextBlock x:Name="DeviceIdText" FontSize="12" Foreground="{DynamicResource Ink}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <Border x:Name="DeviceAppPill" Style="{StaticResource StatusPillBorder}" Margin="0,0,0,2">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="&#xE737;" Style="{StaticResource Icon}" FontSize="11"
+                                                                       Foreground="{DynamicResource Muted}" Margin="0,0,6,0" />
+                                                            <TextBlock x:Name="DeviceAppText" FontSize="12" Foreground="{DynamicResource Muted}" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </WrapPanel>
                                             </StackPanel>
                                         </Grid>
-                                    </Border>
+                                    </DockPanel>
+                                </Border>
 
-                                    <Border x:Name="RemovalView" Visibility="Collapsed" Style="{StaticResource GlassCard}">
-                                        <StackPanel>
-                                            <TextBlock Text="移除这台电脑？" FontSize="20" FontWeight="SemiBold" />
-                                            <TextBlock x:Name="RemovalMessage" TextWrapping="Wrap" Margin="0,12,0,20" Foreground="{DynamicResource Muted}" />
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <Button x:Name="KeepDeviceButton" Content="保留电脑" Click="KeepDevice" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                                                <Button Content="确认移除" Click="RemoveDevice" Style="{StaticResource PrimaryButton}" AutomationProperties.AutomationId="ConfirmRemoval" />
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </Border>
-                                    <Border x:Name="EditorView" Visibility="Collapsed" Style="{StaticResource GlassCard}">
-                                        <StackPanel>
-                                            <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,9" />
-                                            <Grid>
+                                <!-- Mode Switch Card -->
+                                <Border Style="{StaticResource DashboardCard}" Padding="18,14" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,10">
+                                            <TextBlock x:Name="ModeHintText" DockPanel.Dock="Right" FontSize="12"
+                                                       Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
+                                            <TextBlock Text="连接模式切换" Style="{StaticResource SectionHeader}" />
+                                        </DockPanel>
+                                        <Border Background="{DynamicResource SurfaceSubtle}" BorderBrush="{DynamicResource CardBorder}"
+                                                BorderThickness="1" CornerRadius="10" Padding="4">
+                                            <UniformGrid Columns="2">
+                                                <Button x:Name="ModeStreamButton" Style="{StaticResource ModeSegmentButton}"
+                                                        Click="SelectStreamMode" Tag="Selected" Margin="0,0,3,0"
+                                                        AutomationProperties.AutomationId="ModeStream">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="&#xE945;" Style="{StaticResource Icon}" FontSize="14"
+                                                                   Foreground="{DynamicResource Accent}" Margin="0,0,7,0" />
+                                                        <TextBlock Text="高刷串流 (Moonlight)" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button x:Name="ModeOfficeButton" Style="{StaticResource ModeSegmentButton}"
+                                                        Click="SelectOfficeMode" Margin="3,0,0,0"
+                                                        AutomationProperties.AutomationId="ModeOffice">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="&#xE821;" Style="{StaticResource Icon}" FontSize="14"
+                                                                   Foreground="{DynamicResource PurpleAccent}" Margin="0,0,7,0" />
+                                                        <TextBlock Text="办公模式 (RustDesk)" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </UniformGrid>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Stream Quality / FPS / Bitrate Card -->
+                                <Border x:Name="StreamConfigCard" Style="{StaticResource DashboardCard}" Padding="18,16" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,10">
+                                            <Border DockPanel.Dock="Right" Style="{StaticResource StatusPillBorder}"
+                                                    Background="{DynamicResource AccentSoft}" BorderBrush="{DynamicResource AccentBorder}">
+                                                <TextBlock x:Name="StreamSummaryText" Text="2560×1440 · 60fps · 35 Mbps · HEVC"
+                                                           FontSize="11.5" FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+                                            </Border>
+                                            <TextBlock Text="画质 · 帧率 · 码率预设" Style="{StaticResource SectionHeader}" />
+                                        </DockPanel>
+
+                                        <Border x:Name="OfficeModeNotice" Visibility="Collapsed"
+                                                Background="{DynamicResource PurpleSoft}" BorderBrush="{DynamicResource CardBorder}"
+                                                BorderThickness="1" CornerRadius="9" Padding="11,7" Margin="0,0,0,10">
+                                            <TextBlock Text="当前为办公模式 (RustDesk)，以下串流参数仅在高刷串流模式下生效，配置已自动保留。"
+                                                       FontSize="12" Foreground="{DynamicResource PurpleAccent}" TextWrapping="Wrap" />
+                                        </Border>
+
+                                        <StackPanel x:Name="StreamConfigBody">
+                                            <!-- 4 Preset Tiles -->
+                                            <UniformGrid Columns="4" Margin="0,0,0,14">
+                                                <Button x:Name="PresetUltra120Button" Style="{StaticResource PresetCardButton}"
+                                                        Click="SelectPresetUltra120" Margin="0,0,6,0"
+                                                        AutomationProperties.AutomationId="PresetUltra120">
+                                                    <StackPanel>
+                                                        <TextBlock Text="极速 120fps" FontSize="13.5" FontWeight="Bold" />
+                                                        <TextBlock Text="1080p · 120fps · 45M" FontSize="11"
+                                                                   Foreground="{DynamicResource Muted}" Margin="0,3,0,0" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button x:Name="PresetHigh2KButton" Style="{StaticResource PresetCardButton}"
+                                                        Click="SelectPresetHigh2K" Margin="3,0,3,0"
+                                                        AutomationProperties.AutomationId="PresetHigh2K">
+                                                    <StackPanel>
+                                                        <TextBlock Text="高清 2K" FontSize="13.5" FontWeight="Bold" />
+                                                        <TextBlock Text="2K · 60fps · 35M" FontSize="11"
+                                                                   Foreground="{DynamicResource Muted}" Margin="0,3,0,0" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button x:Name="PresetSaverButton" Style="{StaticResource PresetCardButton}"
+                                                        Click="SelectPresetSaver" Margin="3,0,3,0"
+                                                        AutomationProperties.AutomationId="PresetSaver">
+                                                    <StackPanel>
+                                                        <TextBlock Text="省流模式" FontSize="13.5" FontWeight="Bold" />
+                                                        <TextBlock Text="1080p · 60fps · 12M" FontSize="11"
+                                                                   Foreground="{DynamicResource Muted}" Margin="0,3,0,0" />
+                                                    </StackPanel>
+                                                </Button>
+                                                <Button x:Name="PresetCustomButton" Style="{StaticResource PresetCardButton}"
+                                                        Click="SelectPresetCustom" Margin="6,0,0,0"
+                                                        AutomationProperties.AutomationId="PresetCustom">
+                                                    <StackPanel>
+                                                        <TextBlock Text="自定义" FontSize="13.5" FontWeight="Bold" />
+                                                        <TextBlock x:Name="CustomPresetSubtitle" Text="手动微调参数" FontSize="11"
+                                                                   Foreground="{DynamicResource Muted}" Margin="0,3,0,0"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </UniformGrid>
+
+                                            <!-- Fine-grained Parameter Row 1: Resolution, FPS, Codec -->
+                                            <Grid Margin="0,0,0,12">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="14" />
+                                                    <ColumnDefinition Width="10" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="10" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <StackPanel>
-                                                    <Label x:Name="NameLabel" Target="{Binding ElementName=NameInput}" Content="电脑名称" Foreground="{DynamicResource Muted}" Padding="0,4" />
-                                                    <TextBox x:Name="NameInput" AutomationProperties.AutomationId="DeviceName" AutomationProperties.LabeledBy="{Binding ElementName=NameLabel}"
-                                                             MaxLength="40" Style="{StaticResource DeviceField}" />
+                                                <StackPanel Grid.Column="0">
+                                                    <TextBlock Text="分辨率" FontSize="12" Foreground="{DynamicResource Muted}" Margin="2,0,0,5" />
+                                                    <ComboBox x:Name="ResolutionCombo" Style="{StaticResource ModernComboBox}"
+                                                              MinHeight="36" SelectionChanged="StreamParamChanged">
+                                                        <ComboBoxItem Content="1920x1080" Tag="1920x1080" />
+                                                        <ComboBoxItem Content="2560x1440" Tag="2560x1440" />
+                                                        <ComboBoxItem Content="2560x1600" Tag="2560x1600" />
+                                                        <ComboBoxItem Content="3840x2160" Tag="3840x2160" />
+                                                    </ComboBox>
                                                 </StackPanel>
                                                 <StackPanel Grid.Column="2">
-                                                    <Label x:Name="IdLabel" Target="{Binding ElementName=IdInput}" Content="RustDesk 设备 ID" Foreground="{DynamicResource Muted}" Padding="0,4" />
-                                                    <TextBox x:Name="IdInput" AutomationProperties.AutomationId="DeviceId" AutomationProperties.LabeledBy="{Binding ElementName=IdLabel}"
-                                                             MaxLength="64" Style="{StaticResource DeviceField}" />
+                                                    <TextBlock Text="目标帧率" FontSize="12" Foreground="{DynamicResource Muted}" Margin="2,0,0,5" />
+                                                    <ComboBox x:Name="FpsCombo" Style="{StaticResource ModernComboBox}"
+                                                              MinHeight="36" SelectionChanged="StreamParamChanged">
+                                                        <ComboBoxItem Content="30 FPS" Tag="30" />
+                                                        <ComboBoxItem Content="60 FPS" Tag="60" />
+                                                        <ComboBoxItem Content="90 FPS" Tag="90" />
+                                                        <ComboBoxItem Content="120 FPS" Tag="120" />
+                                                        <ComboBoxItem Content="144 FPS" Tag="144" />
+                                                    </ComboBox>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="4">
+                                                    <TextBlock Text="视频编码" FontSize="12" Foreground="{DynamicResource Muted}" Margin="2,0,0,5" />
+                                                    <ComboBox x:Name="CodecCombo" Style="{StaticResource ModernComboBox}"
+                                                              MinHeight="36" SelectionChanged="StreamParamChanged">
+                                                        <ComboBoxItem Content="Auto (自动)" Tag="Auto" />
+                                                        <ComboBoxItem Content="HEVC (H.265)" Tag="H265" />
+                                                        <ComboBoxItem Content="H.264" Tag="H264" />
+                                                        <ComboBoxItem Content="AV1" Tag="Av1" />
+                                                    </ComboBox>
                                                 </StackPanel>
                                             </Grid>
-                                            <TextBlock x:Name="EditorMessage" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,9,0,10" AutomationProperties.LiveSetting="Polite" />
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <Button x:Name="RemoveButton" Content="移除电脑" Click="RequestRemoval" Foreground="{DynamicResource Danger}"
-                                                        Visibility="Collapsed" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                                                <Button Content="取消" Click="CancelEdit" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                                                <Button x:Name="SaveDeviceButton" Content="保存电脑" Click="SaveDevice" IsDefault="True" Style="{StaticResource PrimaryButton}"
-                                                        AutomationProperties.AutomationId="SaveDevice" />
+
+                                            <!-- Fine-grained Parameter Row 2: Bitrate Slider + Hardware Decode Toggle -->
+                                            <Border Style="{StaticResource SubPanelCard}" Padding="14,10">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="20" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                        <DockPanel Margin="0,0,0,6">
+                                                            <TextBlock x:Name="BitrateValueText" DockPanel.Dock="Right" Text="35 Mbps"
+                                                                       FontWeight="Bold" FontSize="13" Foreground="{DynamicResource Accent}" />
+                                                            <TextBlock Text="视频码率 (5 – 150 Mbps)" FontSize="12" Foreground="{DynamicResource Muted}" />
+                                                        </DockPanel>
+                                                        <Slider x:Name="BitrateSlider" Style="{StaticResource ModernSlider}"
+                                                                Minimum="5" Maximum="150" Value="35"
+                                                                TickFrequency="1" IsSnapToTickEnabled="True"
+                                                                ValueChanged="BitrateSliderValueChanged"
+                                                                Thumb.DragStarted="BitrateSliderDragStarted"
+                                                                Thumb.DragCompleted="BitrateSliderDragCompleted" />
+                                                    </StackPanel>
+
+                                                    <Border Grid.Column="1" Width="1" Background="{DynamicResource Line}"
+                                                            HorizontalAlignment="Center" Margin="0,2" />
+
+                                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                        <TextBlock Text="显卡硬件解码" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,6" />
+                                                        <CheckBox x:Name="HardwareDecodeToggle" Style="{StaticResource ModernToggleSwitch}"
+                                                                  Content="已开启" IsChecked="True"
+                                                                  Checked="HardwareDecodeChanged" Unchecked="HardwareDecodeChanged" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Action Bar Card -->
+                                <Border Style="{StaticResource DashboardCard}" Padding="18,16">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,12">
+                                            <Button x:Name="ActionEngineLink" DockPanel.Dock="Right" Content="前往引擎中心 →"
+                                                    Click="ShowEnginesPage" Style="{StaticResource InlineLinkButton}" Visibility="Collapsed" />
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Ellipse x:Name="ActionEngineDot" Width="8" Height="8" Margin="0,0,8,0" Fill="{DynamicResource Ready}" />
+                                                <TextBlock x:Name="ActionEngineHint" FontSize="12.5" Foreground="{DynamicResource Muted}"
+                                                           TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
+                                        </DockPanel>
+
+                                        <DockPanel LastChildFill="False">
+                                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                                <Button x:Name="ConnectButton" Click="ConnectDevice" IsDefault="True"
+                                                        Style="{StaticResource HeroConnectButton}" MinWidth="185"
+                                                        AutomationProperties.AutomationId="ConnectDevice">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock x:Name="ConnectButtonIcon" Text="&#xE945;" Style="{StaticResource Icon}"
+                                                                   FontSize="15" Margin="0,0,8,0" />
+                                                        <TextBlock x:Name="ConnectButtonText" Text="发起高刷连接" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+
+                                                <Button x:Name="PairButton" Click="PairDevice" Style="{StaticResource QuietButton}"
+                                                        MinHeight="46" Padding="16,10" Margin="10,0,0,0"
+                                                        ToolTip="首次连接 Sunshine 被控端时用于配对 PIN 码"
+                                                        AutomationProperties.AutomationId="PairDevice">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="&#xE8D7;" Style="{StaticResource Icon}" FontSize="14" Margin="0,0,7,0" />
+                                                        <TextBlock Text="配对设备 (Pair)" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </StackPanel>
+
+                                            <TextBlock x:Name="ActionTargetSummary" DockPanel.Dock="Right" FontSize="12"
+                                                       Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- 3. Inline Add / Edit Device Form -->
+                            <Border x:Name="EditorView" Visibility="Collapsed" Style="{StaticResource DashboardCard}" Padding="22,20">
+                                <StackPanel>
+                                    <TextBlock x:Name="EditorTitle" Text="添加电脑" FontSize="20" FontWeight="Bold" Margin="0,0,0,4" />
+                                    <TextBlock Text="填写校园网/局域网地址用于高刷串流，填写 RustDesk 设备 ID 用于办公模式（至少填写一项）。"
+                                               FontSize="12.5" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" />
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="14" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <Label x:Name="NameLabel" Target="{Binding ElementName=NameInput}" Content="电脑名称 *"
+                                                   Foreground="{DynamicResource Muted}" Padding="0,0,0,5" />
+                                            <TextBox x:Name="NameInput" MaxLength="40" Style="{StaticResource DeviceField}"
+                                                     AutomationProperties.AutomationId="DeviceName"
+                                                     AutomationProperties.LabeledBy="{Binding ElementName=NameLabel}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <Label Content="默认连接模式" Foreground="{DynamicResource Muted}" Padding="0,0,0,5" />
+                                            <ComboBox x:Name="EditorModeCombo" Style="{StaticResource ModernComboBox}">
+                                                <ComboBoxItem Content="高刷串流 (Moonlight)" Tag="Stream" />
+                                                <ComboBoxItem Content="办公模式 (RustDesk)" Tag="Office" />
+                                            </ComboBox>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="14" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <Label x:Name="HostLabel" Target="{Binding ElementName=HostAddressInput}"
+                                                   Content="校园网 / 局域网地址（高刷串流）" Foreground="{DynamicResource Muted}" Padding="0,0,0,5" />
+                                            <TextBox x:Name="HostAddressInput" MaxLength="253" Style="{StaticResource DeviceField}"
+                                                     ToolTip="输入 IPv4、IPv6 或主机名，例如 10.12.34.56"
+                                                     AutomationProperties.AutomationId="DeviceHostAddress"
+                                                     AutomationProperties.LabeledBy="{Binding ElementName=HostLabel}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <Label x:Name="IdLabel" Target="{Binding ElementName=IdInput}"
+                                                   Content="RustDesk 设备 ID（办公模式）" Foreground="{DynamicResource Muted}" Padding="0,0,0,5" />
+                                            <TextBox x:Name="IdInput" MaxLength="64" Style="{StaticResource DeviceField}"
+                                                     ToolTip="目标电脑 RustDesk 首页显示的 9 位数字 ID"
+                                                     AutomationProperties.AutomationId="DeviceId"
+                                                     AutomationProperties.LabeledBy="{Binding ElementName=IdLabel}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="14" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <Label x:Name="AppNameLabel" Target="{Binding ElementName=StreamAppNameInput}"
+                                                   Content="Sunshine 串流应用名" Foreground="{DynamicResource Muted}" Padding="0,0,0,5" />
+                                            <TextBox x:Name="StreamAppNameInput" MaxLength="64" Style="{StaticResource DeviceField}"
+                                                     Text="Desktop" AutomationProperties.AutomationId="StreamAppName"
+                                                     AutomationProperties.LabeledBy="{Binding ElementName=AppNameLabel}" />
+                                        </StackPanel>
+                                        <Border Grid.Column="2" Style="{StaticResource SubPanelCard}" VerticalAlignment="Bottom" MinHeight="40">
+                                            <TextBlock Text="提示：默认 Desktop 会直接串流整个桌面；也可填写 Steam 等 Sunshine 应用名。"
+                                                       FontSize="11.5" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                        </Border>
+                                    </Grid>
+
+                                    <TextBlock x:Name="EditorMessage" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"
+                                               Margin="0,4,0,16" AutomationProperties.LiveSetting="Polite" />
+
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button x:Name="RemoveButton" Content="移除电脑" Click="RequestRemoval"
+                                                Foreground="{DynamicResource Danger}" Visibility="Collapsed"
+                                                Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
+                                        <Button Content="取消" Click="CancelEdit" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
+                                        <Button x:Name="SaveDeviceButton" Content="保存电脑" Click="SaveDevice" IsDefault="True"
+                                                Style="{StaticResource PrimaryButton}" AutomationProperties.AutomationId="SaveDevice" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 4. Inline Removal Confirmation -->
+                            <Border x:Name="RemovalView" Visibility="Collapsed" Style="{StaticResource DashboardCard}" Padding="24">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <TextBlock Text="&#xE7BA;" Style="{StaticResource Icon}" FontSize="20"
+                                                   Foreground="{DynamicResource Danger}" Margin="0,0,10,0" />
+                                        <TextBlock Text="移除这台电脑？" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="RemovalMessage" TextWrapping="Wrap" Margin="0,6,0,20" Foreground="{DynamicResource Muted}" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button x:Name="KeepDeviceButton" Content="保留电脑" Click="KeepDevice"
+                                                Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
+                                        <Button Content="确认移除" Click="RemoveDevice" Background="{DynamicResource Danger}"
+                                                Foreground="{DynamicResource DangerInk}" Style="{StaticResource PrimaryButton}"
+                                                AutomationProperties.AutomationId="ConfirmRemoval" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- PAGE 2: 本机被控 -->
+                <ScrollViewer x:Name="LocalHostPage" Grid.Row="0" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Focusable="False" Padding="20,16,20,16">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource GlassScrollBar}" />
+                    </ScrollViewer.Resources>
+
+                    <StackPanel MaxWidth="1120">
+                        <DockPanel Margin="0,0,0,14">
+                            <Button DockPanel.Dock="Right" Click="RefreshHostStatusClicked" Style="{StaticResource QuietButton}"
+                                    VerticalAlignment="Center" AutomationProperties.AutomationId="RefreshHostStatus">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE72C;" Style="{StaticResource Icon}" FontSize="13" Margin="0,0,6,0" />
+                                    <TextBlock Text="刷新状态" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <StackPanel>
+                                <TextBlock Text="本机被控中心" FontSize="22" FontWeight="Bold" />
+                                <TextBlock Text="管理当前电脑的 Sunshine 高刷被控端与 RustDesk 办公被控端，查看校园网直连地址与显卡编码能力。"
+                                           FontSize="12.5" Foreground="{DynamicResource Muted}" Margin="0,3,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <!-- Hero Switch & Service Control Card -->
+                        <Border Style="{StaticResource DashboardCard}" Margin="0,0,0,14">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,16">
+                                    <CheckBox x:Name="HostModeToggle" DockPanel.Dock="Right" Style="{StaticResource ModernToggleSwitch}"
+                                              Content="已开启" VerticalAlignment="Center"
+                                              Checked="HostModeToggled" Unchecked="HostModeToggled"
+                                              AutomationProperties.AutomationId="HostModeToggle" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border Style="{StaticResource DeviceGlyph}" Width="46" Height="46" Margin="0,0,14,0">
+                                            <TextBlock Text="&#xE977;" Style="{StaticResource Icon}" FontSize="22" />
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="允许本机被控" FontSize="17" FontWeight="Bold" />
+                                            <TextBlock x:Name="HostModeDescription" Text="开启后可随时启停 Sunshine 高刷服务端与 RustDesk 被控进程"
+                                                       FontSize="12.5" Foreground="{DynamicResource Muted}" Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <!-- Host Engine Status Cards -->
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="12" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <Border Grid.Column="0" Style="{StaticResource SubPanelCard}">
+                                        <StackPanel>
+                                            <DockPanel Margin="0,0,0,6">
+                                                <Border x:Name="HostSunshineBadge" DockPanel.Dock="Right" CornerRadius="6" Padding="8,2"
+                                                        Background="{DynamicResource SurfaceSubtle}">
+                                                    <TextBlock x:Name="HostSunshineBadgeText" Text="未安装" FontSize="11.5" FontWeight="Bold"
+                                                               Foreground="{DynamicResource Muted}" />
+                                                </Border>
+                                                <TextBlock Text="Sunshine 高刷被控端" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <TextBlock x:Name="HostSunshinePathText" FontSize="12" Foreground="{DynamicResource Muted}"
+                                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Grid.Column="2" Style="{StaticResource SubPanelCard}">
+                                        <StackPanel>
+                                            <DockPanel Margin="0,0,0,6">
+                                                <Border x:Name="HostRustDeskBadge" DockPanel.Dock="Right" CornerRadius="6" Padding="8,2"
+                                                        Background="{DynamicResource SurfaceSubtle}">
+                                                    <TextBlock x:Name="HostRustDeskBadgeText" Text="未安装" FontSize="11.5" FontWeight="Bold"
+                                                               Foreground="{DynamicResource Muted}" />
+                                                </Border>
+                                                <TextBlock Text="RustDesk 办公被控端" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <TextBlock x:Name="HostRustDeskPathText" FontSize="12" Foreground="{DynamicResource Muted}"
+                                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                                         </StackPanel>
                                     </Border>
                                 </Grid>
 
-                                <StackPanel x:Name="SettingsPage" Visibility="Collapsed">
+                                <!-- Host Control Buttons -->
+                                <WrapPanel>
+                                    <Button x:Name="StartSunshineButton" Click="StartSunshineClicked"
+                                            Style="{StaticResource CompactPrimaryButton}" MinHeight="36" Margin="0,0,8,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE768;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="启动 Sunshine" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="StopSunshineButton" Click="StopSunshineClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="36" Margin="0,0,8,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE71A;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="停止 Sunshine" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="OpenSunshineUiButton" Click="OpenSunshineWebUiClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="36" Margin="0,0,8,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE8A7;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="打开 Sunshine 面板" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="StartRustDeskHostButton" Click="StartRustDeskHostClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="36" Margin="0,0,8,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE768;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="启动 RustDesk" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Content="前往引擎中心" Click="ShowEnginesPage"
+                                            Style="{StaticResource InlineLinkButton}" VerticalAlignment="Center" Margin="4,0,0,6" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
 
-                                    <Border Style="{StaticResource GlassCard}">
-                                        <StackPanel>
-                                            <TextBlock Text="RustDesk 客户端" FontWeight="SemiBold" FontSize="18" />
-                                            <TextBlock x:Name="ClientPathText" Margin="0,6,0,12" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"
-                                                       AutomationProperties.LiveSetting="Polite" />
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <Button Content="官方下载" Click="OpenRustDeskDownload" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                                                <Button x:Name="SelectClientButton" Content="选择便携版" Click="SelectRustDesk" Style="{StaticResource QuietButton}" Margin="0,0,8,0"
-                                                        AutomationProperties.AutomationId="SelectClient" />
-                                                <Button x:Name="RescanButton" Content="重新检测" Click="RescanClient" Style="{StaticResource PrimaryButton}" />
+                        <!-- Network & Hardware Info 2-Column Grid -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="14" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Left: Campus / LAN Direct Addresses -->
+                            <Border Grid.Column="0" Style="{StaticResource DashboardCard}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,12">
+                                        <Border DockPanel.Dock="Right" Background="{DynamicResource ReadySoft}" CornerRadius="6" Padding="7,2">
+                                            <TextBlock Text="零中转直连" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource Ready}" />
+                                        </Border>
+                                        <TextBlock Text="本机校园网直连地址" FontSize="15.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </DockPanel>
+
+                                    <Border Style="{StaticResource SubPanelCard}" Padding="12,9" Margin="0,0,0,12">
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Click="CopyHostNameClicked" Style="{StaticResource CompactQuietButton}"
+                                                    MinHeight="28" Padding="10,2" Content="复制" />
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="主机名 (Hostname)" FontSize="11" Foreground="{DynamicResource Muted}" />
+                                                <TextBlock x:Name="LocalHostNameText" FontWeight="SemiBold" FontSize="13.5" Margin="0,2,0,0" />
                                             </StackPanel>
-                                        </StackPanel>
+                                        </DockPanel>
                                     </Border>
-                                    <Border Style="{StaticResource GlassCard}" Margin="0,12,0,0">
-                                        <StackPanel>
-                                            <TextBlock x:Name="AppVersion" FontWeight="SemiBold" FontSize="18" />
-                                            <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" Margin="0,6,0,12" Foreground="{DynamicResource Muted}" AutomationProperties.LiveSetting="Polite" />
-                                            <Button x:Name="UpdateButton" Content="检查更新" Click="UpdateClicked" HorizontalAlignment="Right" Style="{StaticResource QuietButton}" />
-                                        </StackPanel>
+
+                                    <TextBlock Text="IPv4 地址（局域网 / 校园网）" Style="{StaticResource SectionHeader}" Margin="0,0,0,6" />
+                                    <ItemsControl x:Name="LocalIpv4List" Margin="0,0,0,12">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Style="{StaticResource SubPanelCard}" Padding="12,8" Margin="0,0,0,6">
+                                                    <DockPanel>
+                                                        <Button DockPanel.Dock="Right" Click="CopyAddressClicked" Tag="{Binding}"
+                                                                Style="{StaticResource CompactQuietButton}" MinHeight="28" Padding="10,2" Content="复制" />
+                                                        <TextBlock Text="{Binding}" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                                   FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                                                    </DockPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock x:Name="LocalIpv4Empty" Text="未检测到活跃的局域网 / 校园网 IPv4 地址"
+                                               FontSize="12" Foreground="{DynamicResource Muted}" Margin="2,0,0,12" Visibility="Collapsed" />
+
+                                    <TextBlock Text="IPv6 地址（推荐跨寝室直连）" Style="{StaticResource SectionHeader}" Margin="0,0,0,6" />
+                                    <ItemsControl x:Name="LocalIpv6List">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Style="{StaticResource SubPanelCard}" Padding="12,8" Margin="0,0,0,6">
+                                                    <DockPanel>
+                                                        <Button DockPanel.Dock="Right" Click="CopyAddressClicked" Tag="{Binding}"
+                                                                Style="{StaticResource CompactQuietButton}" MinHeight="28" Padding="10,2" Content="复制" />
+                                                        <TextBlock Text="{Binding}" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                                   FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                                                   ToolTip="{Binding}" Margin="0,0,8,0" />
+                                                    </DockPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock x:Name="LocalIpv6Empty" Text="当前网络未分配公网 / 校园网 IPv6 地址"
+                                               FontSize="12" Foreground="{DynamicResource Muted}" Margin="2,0,0,0" Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Right: GPU Hardware Encoders -->
+                            <Border Grid.Column="2" Style="{StaticResource DashboardCard}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,10">
+                                        <Border DockPanel.Dock="Right" Background="{DynamicResource PurpleSoft}" CornerRadius="6" Padding="7,2">
+                                            <TextBlock Text="硬件编解码" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource PurpleAccent}" />
+                                        </Border>
+                                        <TextBlock Text="显卡硬件编码能力" FontSize="15.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </DockPanel>
+
+                                    <TextBlock Text="高刷被控端（Sunshine）将优先调用下方检测到的硬件视频编码引擎，实现低延迟高帧率推流。"
+                                               FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,14" />
+
+                                    <ItemsControl x:Name="GpuEncodersList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Style="{StaticResource SubPanelCard}" Padding="13,10" Margin="0,0,0,8">
+                                                    <DockPanel>
+                                                        <Border x:Name="EncoderPill" DockPanel.Dock="Right" CornerRadius="6"
+                                                                Padding="9,3" VerticalAlignment="Center"
+                                                                Background="{DynamicResource ReadySoft}">
+                                                            <TextBlock x:Name="EncoderPillText" Text="{Binding EncoderName}"
+                                                                       FontSize="11.5" FontWeight="Bold" Foreground="{DynamicResource Ready}" />
+                                                        </Border>
+                                                        <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                                            <TextBlock Text="{Binding AdapterName}" FontWeight="SemiBold" FontSize="13"
+                                                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding AdapterName}" />
+                                                            <TextBlock Text="{Binding Vendor}" FontSize="11.5" Foreground="{DynamicResource Muted}" Margin="0,2,0,0" />
+                                                        </StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding EncoderName}" Value="QSV">
+                                                        <Setter TargetName="EncoderPill" Property="Background" Value="{DynamicResource AccentSoft}" />
+                                                        <Setter TargetName="EncoderPillText" Property="Foreground" Value="{DynamicResource Accent}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding EncoderName}" Value="AMF">
+                                                        <Setter TargetName="EncoderPill" Property="Background" Value="{DynamicResource PurpleSoft}" />
+                                                        <Setter TargetName="EncoderPillText" Property="Foreground" Value="{DynamicResource PurpleAccent}" />
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <Border x:Name="GpuEncodersEmpty" Style="{StaticResource SubPanelCard}" Visibility="Collapsed">
+                                        <TextBlock Text="未检测到 NVIDIA NVENC / Intel QSV / AMD AMF 独立或核显编码器，Sunshine 将自动回退至软件编码。"
+                                                   FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" />
                                     </Border>
                                 </StackPanel>
-                            </Grid>
-                            <TextBlock x:Name="StatusMessage" Margin="2,14,2,0" TextWrapping="Wrap"
-                                       Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
-                        </StackPanel>
-                    </ScrollViewer>
-                </Grid>
-            </Border>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- PAGE 3: 网络节点 (EasyTier P2P Mesh Center) -->
+                <ScrollViewer x:Name="NetworkNodesPage" Grid.Row="0" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Focusable="False" Padding="20,16,20,16">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource GlassScrollBar}" />
+                    </ScrollViewer.Resources>
+
+                    <StackPanel MaxWidth="1120">
+                        <DockPanel Margin="0,0,0,12">
+                            <Button DockPanel.Dock="Right" Click="RefreshNetworkInfoClicked" Style="{StaticResource CompactQuietButton}" MinHeight="34"
+                                    VerticalAlignment="Center" Margin="12,0,0,0"
+                                    AutomationProperties.AutomationId="RefreshNetworkInfo">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE72C;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                    <TextBlock Text="刷新状态" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <StackPanel>
+                                <TextBlock Text="网络节点与跨网组网" FontSize="22" FontWeight="Bold" />
+                                <TextBlock Text="同校园网零服务器低延迟直连，跨外网通过 EasyTier P2P 打洞与阿里云自建轻量中继兜底。"
+                                           FontSize="12.5" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <!-- Compact Campus / LAN Direct Summary Strip -->
+                        <Border Style="{StaticResource DashboardCard}" Padding="16,12" Margin="0,0,0,12">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,10">
+                                    <Border DockPanel.Dock="Right" Background="{DynamicResource ReadySoft}"
+                                            CornerRadius="6" Padding="8,2" VerticalAlignment="Center">
+                                        <TextBlock Text="校园网 / 局域网直连（零服务器）" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource Ready}" />
+                                    </Border>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="&#xE968;" Style="{StaticResource Icon}" FontSize="15"
+                                                   Foreground="{DynamicResource Ready}" Margin="0,0,8,0" />
+                                        <TextBlock Text="本机局域网直连概览" FontSize="14.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="10" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="10" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{StaticResource SubPanelCard}" Padding="11,8">
+                                        <StackPanel>
+                                            <TextBlock Text="本机主机名" FontSize="11" Foreground="{DynamicResource Muted}" />
+                                            <TextBlock x:Name="NetPageHostName" FontSize="13.5" FontWeight="Bold" Margin="0,2,0,0"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{StaticResource SubPanelCard}" Padding="11,8">
+                                        <StackPanel>
+                                            <TextBlock Text="首选 IPv4" FontSize="11" Foreground="{DynamicResource Muted}" />
+                                            <TextBlock x:Name="NetPagePrimaryIpv4" FontSize="13.5" FontWeight="Bold"
+                                                       FontFamily="Cascadia Mono, Consolas, Segoe UI" Foreground="{DynamicResource Accent}"
+                                                       Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="4" Style="{StaticResource SubPanelCard}" Padding="11,8">
+                                        <StackPanel>
+                                            <TextBlock Text="首选 IPv6" FontSize="11" Foreground="{DynamicResource Muted}" />
+                                            <TextBlock x:Name="NetPagePrimaryIpv6" FontSize="12.5" FontWeight="SemiBold"
+                                                       FontFamily="Cascadia Mono, Consolas, Segoe UI" Foreground="{DynamicResource Ready}"
+                                                       Margin="0,2,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- EasyTier P2P Mesh Control & Config Card -->
+                        <Border Style="{StaticResource DashboardCard}" Padding="18,16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,8">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Border x:Name="EasyTierVirtualIpPill" Style="{StaticResource StatusPillBorder}"
+                                                Background="{DynamicResource AccentSoft}" BorderBrush="{DynamicResource AccentBorder}"
+                                                Padding="9,3" Margin="0,0,8,0" Visibility="Collapsed">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="虚拟 IP " FontSize="11.5" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
+                                                <TextBlock x:Name="EasyTierVirtualIpText" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                           FontSize="12" FontWeight="Bold" Foreground="{DynamicResource Accent}" VerticalAlignment="Center" />
+                                                <Button x:Name="CopyEasyTierIpButton" Content="复制" Click="CopyEasyTierIpClicked"
+                                                        Style="{StaticResource InlineLinkButton}" FontSize="11" Padding="6,1" Margin="4,0,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border x:Name="EasyTierStatusBadge" CornerRadius="7" Padding="10,4"
+                                                VerticalAlignment="Center" Background="{DynamicResource SurfaceSubtle}">
+                                            <TextBlock x:Name="EasyTierStatusBadgeText" Text="未安装" FontSize="12"
+                                                       FontWeight="Bold" Foreground="{DynamicResource Muted}" />
+                                        </Border>
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="&#xE774;" Style="{StaticResource Icon}" FontSize="18"
+                                                   Foreground="{DynamicResource Accent}" Margin="0,0,10,0" />
+                                        <TextBlock Text="EasyTier P2P 跨网组网" FontSize="16.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <TextBlock x:Name="EasyTierDetailText" Text="配置同一网络名称、密钥与阿里云节点地址后启动，即可自动建立 P2P 虚拟局域网供 Moonlight / RustDesk 直连。"
+                                           FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12" />
+
+                                <!-- Control Actions Bar -->
+                                <WrapPanel Margin="0,0,0,12">
+                                    <Button x:Name="StartEasyTierButton" Click="StartEasyTierClicked"
+                                            Style="{StaticResource CompactPrimaryButton}" MinHeight="34" Margin="0,0,8,6"
+                                            AutomationProperties.AutomationId="StartEasyTier">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE768;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="启动组网" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="StopEasyTierButton" Click="StopEasyTierClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="34" Margin="0,0,8,6"
+                                            AutomationProperties.AutomationId="StopEasyTier">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE71A;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="停止组网" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="RefreshEasyTierButton" Click="RefreshEasyTierClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="34" Margin="0,0,8,6"
+                                            AutomationProperties.AutomationId="RefreshEasyTier">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE72C;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="刷新节点" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="OpenAliyunGuideButton" Click="OpenAliyunGuideClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="34" Margin="0,0,8,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE82D;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="部署阿里云节点指南" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="EasyTierGoEnginesButton" Content="前往引擎中心安装 EasyTier" Click="ShowEnginesPage"
+                                            Style="{StaticResource InlineLinkButton}" VerticalAlignment="Center" Margin="2,0,0,6" />
+                                </WrapPanel>
+
+                                <Border Height="1" Background="{DynamicResource Line}" Margin="0,0,0,12" />
+
+                                <!-- Editable EasyTier Configuration Form -->
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="14" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="10" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Peer URL -->
+                                    <StackPanel Grid.Row="0" Grid.Column="0">
+                                        <TextBlock Text="节点地址 (Peer URL)" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,5" />
+                                        <Grid>
+                                            <TextBox x:Name="EasyTierPeerUrlInput" Style="{StaticResource DeviceField}"
+                                                     TextChanged="EasyTierFieldTextChanged"
+                                                     AutomationProperties.AutomationId="EasyTierPeerUrlInput" />
+                                            <TextBlock x:Name="EasyTierPeerUrlPlaceholder" Text="tcp://&lt;阿里云公网IP&gt;:11010"
+                                                       Foreground="{DynamicResource Muted}" Opacity="0.58"
+                                                       VerticalAlignment="Center" Margin="14,0,0,0" IsHitTestVisible="False" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <!-- Network Name -->
+                                    <StackPanel Grid.Row="0" Grid.Column="2">
+                                        <TextBlock Text="网络名称 (Network Name)" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,5" />
+                                        <Grid>
+                                            <TextBox x:Name="EasyTierNetworkNameInput" Style="{StaticResource DeviceField}"
+                                                     TextChanged="EasyTierFieldTextChanged"
+                                                     AutomationProperties.AutomationId="EasyTierNetworkNameInput" />
+                                            <TextBlock x:Name="EasyTierNetworkNamePlaceholder" Text="remotedesk-campus"
+                                                       Foreground="{DynamicResource Muted}" Opacity="0.58"
+                                                       VerticalAlignment="Center" Margin="14,0,0,0" IsHitTestVisible="False" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <!-- Network Secret (maskable) -->
+                                    <StackPanel Grid.Row="2" Grid.Column="0">
+                                        <TextBlock Text="网络密钥 (Network Secret)" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,5" />
+                                        <Grid>
+                                            <PasswordBox x:Name="EasyTierSecretPasswordBox" Style="{StaticResource PasswordField}"
+                                                         PasswordChanged="EasyTierSecretPasswordChanged"
+                                                         AutomationProperties.AutomationId="EasyTierSecretPasswordBox" />
+                                            <TextBox x:Name="EasyTierSecretTextBox" Style="{StaticResource DeviceField}"
+                                                     Padding="12,0,38,0" Visibility="Collapsed"
+                                                     TextChanged="EasyTierSecretTextChanged"
+                                                     AutomationProperties.AutomationId="EasyTierSecretTextBox" />
+                                            <TextBlock x:Name="EasyTierSecretPlaceholder" Text="输入组网共享密钥"
+                                                       Foreground="{DynamicResource Muted}" Opacity="0.58"
+                                                       VerticalAlignment="Center" Margin="14,0,40,0" IsHitTestVisible="False" />
+                                            <Button x:Name="ToggleEasyTierSecretButton" Click="ToggleEasyTierSecretVisibilityClicked"
+                                                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,6,0"
+                                                    Width="28" Height="28" ToolTip="显示或隐藏网络密钥"
+                                                    Style="{StaticResource CaptionButton}" Content="&#xE7B3;" FontSize="12" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <!-- Custom Virtual IPv4 (hidden/disabled when AutoAssignIpv4 is ON) -->
+                                    <StackPanel x:Name="EasyTierVirtualIpv4Panel" Grid.Row="2" Grid.Column="2">
+                                        <TextBlock Text="自定义虚拟 IPv4" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,5" />
+                                        <Grid>
+                                            <TextBox x:Name="EasyTierVirtualIpv4Input" Style="{StaticResource DeviceField}"
+                                                     TextChanged="EasyTierFieldTextChanged"
+                                                     AutomationProperties.AutomationId="EasyTierVirtualIpv4Input" />
+                                            <TextBlock x:Name="EasyTierVirtualIpv4Placeholder" Text="例如：10.126.126.1/24"
+                                                       Foreground="{DynamicResource Muted}" Opacity="0.58"
+                                                       VerticalAlignment="Center" Margin="14,0,0,0" IsHitTestVisible="False" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Toggles & Save Row -->
+                                <DockPanel>
+                                    <Button x:Name="SaveEasyTierConfigButton" DockPanel.Dock="Right" Content="保存配置"
+                                            Click="SaveEasyTierConfigClicked" Style="{StaticResource CompactPrimaryButton}"
+                                            MinHeight="34" VerticalAlignment="Center"
+                                            AutomationProperties.AutomationId="SaveEasyTierConfig" />
+                                    <WrapPanel VerticalAlignment="Center">
+                                        <CheckBox x:Name="EasyTierAutoAssignToggle" Style="{StaticResource ModernToggleSwitch}"
+                                                  Content="自动分配虚拟 IP" IsChecked="True" Margin="0,0,22,4"
+                                                  Checked="EasyTierAutoAssignToggled" Unchecked="EasyTierAutoAssignToggled"
+                                                  AutomationProperties.AutomationId="EasyTierAutoAssignToggle" />
+                                        <CheckBox x:Name="EasyTierAutoStartToggle" Style="{StaticResource ModernToggleSwitch}"
+                                                  Content="启动软件时自动组网" Margin="0,0,12,4"
+                                                  AutomationProperties.AutomationId="EasyTierAutoStartToggle" />
+                                    </WrapPanel>
+                                </DockPanel>
+
+                                <TextBlock x:Name="EasyTierConfigFeedback" FontSize="12" Foreground="{DynamicResource Muted}"
+                                           TextWrapping="Wrap" Margin="2,8,0,0" Visibility="Collapsed"
+                                           AutomationProperties.LiveSetting="Polite" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Online Mesh Peers Card -->
+                        <Border Style="{StaticResource DashboardCard}" Padding="18,16">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,12">
+                                    <Border DockPanel.Dock="Right" Style="{StaticResource StatusPillBorder}" Padding="8,2">
+                                        <TextBlock x:Name="EasyTierPeerCountText" Text="0 个节点" FontSize="11.5"
+                                                   FontWeight="SemiBold" Foreground="{DynamicResource Muted}" />
+                                    </Border>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="&#xE839;" Style="{StaticResource Icon}" FontSize="16"
+                                                   Foreground="{DynamicResource Accent}" Margin="0,0,8,0" />
+                                        <TextBlock Text="在线组网节点" FontSize="15.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <ItemsControl x:Name="EasyTierPeersList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Style="{StaticResource SubPanelCard}" Padding="13,10" Margin="0,0,0,8">
+                                                <DockPanel>
+                                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <Border x:Name="ConnBadge" CornerRadius="6" Padding="8,3" Margin="0,0,8,0"
+                                                                VerticalAlignment="Center" Background="{DynamicResource SurfaceSubtle}">
+                                                            <TextBlock x:Name="ConnBadgeText" Text="{Binding ConnectionType}"
+                                                                       FontSize="11.5" FontWeight="Bold" Foreground="{DynamicResource Muted}" />
+                                                        </Border>
+                                                        <Border Style="{StaticResource StatusPillBorder}" Padding="8,3" Margin="0,0,8,0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding LatencyText}" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                                       FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                                        </Border>
+                                                        <Border Style="{StaticResource StatusPillBorder}" Padding="8,3" Margin="0,0,10,0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding ProtocolText}" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                                       FontSize="11.5" Foreground="{DynamicResource Muted}" />
+                                                        </Border>
+                                                        <Button Content="添加到设备" Click="AddPeerAsDeviceClicked" Tag="{Binding}"
+                                                                Style="{StaticResource CompactPrimaryButton}" MinHeight="30" Padding="11,4"
+                                                                Visibility="{Binding CanAddAsDevice, Converter={StaticResource BoolToVis}}" />
+                                                    </StackPanel>
+
+                                                    <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                                        <TextBlock Text="{Binding DisplayHostname}" FontWeight="SemiBold" FontSize="13.5"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding DisplayVirtualIpv4}" FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                                   FontSize="12" Foreground="{DynamicResource Accent}" Margin="0,2,0,0" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </Border>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding ConnectionTone}" Value="P2P">
+                                                    <Setter TargetName="ConnBadge" Property="Background" Value="{DynamicResource ReadySoft}" />
+                                                    <Setter TargetName="ConnBadgeText" Property="Foreground" Value="{DynamicResource Ready}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionTone}" Value="Relay">
+                                                    <Setter TargetName="ConnBadge" Property="Background" Value="{DynamicResource WarningSoft}" />
+                                                    <Setter TargetName="ConnBadgeText" Property="Foreground" Value="{DynamicResource Warning}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ConnectionTone}" Value="Self">
+                                                    <Setter TargetName="ConnBadge" Property="Background" Value="{DynamicResource AccentSoft}" />
+                                                    <Setter TargetName="ConnBadgeText" Property="Foreground" Value="{DynamicResource Accent}" />
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <Border x:Name="EasyTierPeersEmptyCard" Style="{StaticResource SubPanelCard}" Padding="16,14">
+                                    <DockPanel>
+                                        <Button x:Name="EasyTierEmptyEnginesButton" DockPanel.Dock="Right" Content="前往引擎与设置"
+                                                Click="ShowEnginesPage" Style="{StaticResource CompactQuietButton}"
+                                                VerticalAlignment="Center" Margin="12,0,0,0" />
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock x:Name="EasyTierEmptyTitle" Text="尚未加入 EasyTier 虚拟网络" FontWeight="SemiBold" FontSize="13.5" />
+                                            <TextBlock x:Name="EasyTierEmptySubtitle" Text="请先在「引擎与设置」一键安装 EasyTier，并在上方填写网络名称、密钥与节点地址后点击「启动组网」。"
+                                                       FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- PAGE 4: 引擎与设置 -->
+                <ScrollViewer x:Name="EnginesSettingsPage" Grid.Row="0" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              Focusable="False" Padding="20,16,20,16">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource GlassScrollBar}" />
+                    </ScrollViewer.Resources>
+
+                    <StackPanel MaxWidth="1120">
+                        <DockPanel Margin="0,0,0,14">
+                            <Button x:Name="RescanAllEnginesButton" DockPanel.Dock="Right" Click="RescanAllEnginesClicked"
+                                    Style="{StaticResource PrimaryButton}" MinHeight="38" Padding="16,6" VerticalAlignment="Center"
+                                    AutomationProperties.AutomationId="RescanAllEngines">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE72C;" Style="{StaticResource Icon}" FontSize="13" Margin="0,0,7,0" />
+                                    <TextBlock Text="重新检测全部引擎" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <StackPanel>
+                                <TextBlock Text="托管式引擎中心与设置" FontSize="22" FontWeight="Bold" />
+                                <TextBlock Text="一键拉取或导入开源便携引擎至本地托管目录，与系统环境隔离，随时升级或卸载。"
+                                           FontSize="12.5" Foreground="{DynamicResource Muted}" Margin="0,3,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <!-- Managed Engine Hub Cards -->
+                        <ItemsControl x:Name="EngineCardsList" Margin="0,0,0,6">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource DashboardCard}" Padding="18,14" Margin="0,0,0,10">
+                                        <StackPanel>
+                                            <DockPanel Margin="0,0,0,6">
+                                                <!-- Install State Pill -->
+                                                <Border x:Name="StateBadge" DockPanel.Dock="Right" CornerRadius="7" Padding="10,3"
+                                                        VerticalAlignment="Center" Background="{DynamicResource SurfaceSubtle}">
+                                                    <TextBlock x:Name="StateBadgeText" Text="{Binding StateLabel}" FontSize="11.5"
+                                                               FontWeight="Bold" Foreground="{DynamicResource Muted}" />
+                                                </Border>
+
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="Bold" VerticalAlignment="Center" />
+                                                    <Border Background="{DynamicResource AccentSoft}" CornerRadius="5" Padding="7,2" Margin="9,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding RoleTag}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+                                                    </Border>
+                                                    <Border Background="{DynamicResource SurfaceSubtle}" BorderBrush="{DynamicResource CardBorder}"
+                                                            BorderThickness="1" CornerRadius="5" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding License}" FontSize="10.5" Foreground="{DynamicResource Muted}" />
+                                                    </Border>
+                                                    <TextBlock Text="{Binding VersionLabel}" FontSize="11.5" Foreground="{DynamicResource Muted}"
+                                                               Margin="9,0,0,0" VerticalAlignment="Center"
+                                                               Visibility="{Binding HasVersion, Converter={StaticResource BoolToVis}}" />
+                                                </StackPanel>
+                                            </DockPanel>
+
+                                            <TextBlock Text="{Binding Description}" FontSize="12.5" Foreground="{DynamicResource Muted}"
+                                                       TextWrapping="Wrap" Margin="0,0,0,6" />
+
+                                            <TextBlock Text="{Binding DetailPathText}" FontSize="11.5"
+                                                       FontFamily="Cascadia Mono, Consolas, Segoe UI"
+                                                       Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding DetailPathText}" Margin="0,0,0,10" />
+
+                                            <!-- Progress Bar while Installing -->
+                                            <StackPanel Visibility="{Binding IsInstalling, Converter={StaticResource BoolToVis}}" Margin="0,0,0,10">
+                                                <DockPanel Margin="0,0,0,5">
+                                                    <TextBlock DockPanel.Dock="Right" Text="{Binding ProgressPercentText}"
+                                                               FontSize="11.5" FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+                                                    <TextBlock Text="{Binding ProgressStageText}" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                                </DockPanel>
+                                                <ProgressBar Style="{StaticResource ModernProgressBar}" Minimum="0" Maximum="100"
+                                                             Value="{Binding ProgressValue, Mode=OneWay}" IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}" />
+                                            </StackPanel>
+
+                                            <!-- Active Phase 1 Engine Actions -->
+                                            <WrapPanel Visibility="{Binding IsPhase1Engine, Converter={StaticResource BoolToVis}}">
+                                                <Button Content="一键安装" Click="InstallEngineFromGitHubClicked" Tag="{Binding Kind}"
+                                                        IsEnabled="{Binding CanStartInstall}"
+                                                        Style="{StaticResource CompactPrimaryButton}" Margin="0,0,8,4" />
+                                                <Button Content="导入本地包" Click="ImportEngineLocalClicked" Tag="{Binding Kind}"
+                                                        IsEnabled="{Binding CanStartInstall}"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,8,4" />
+                                                <Button Content="指定路径" Click="SelectEnginePathClicked" Tag="{Binding Kind}"
+                                                        IsEnabled="{Binding CanStartInstall}"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,8,4" />
+                                                <Button Content="卸载托管" Click="UninstallEngineClicked" Tag="{Binding Kind}"
+                                                        IsEnabled="{Binding CanUninstall}" Foreground="{DynamicResource Danger}"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,8,4" />
+                                                <Button Content="发布页" Click="OpenEngineReleasesClicked" Tag="{Binding Kind}"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,0,4" />
+                                            </WrapPanel>
+
+                                            <!-- Phase 2 Placeholder Actions (EasyTier) -->
+                                            <WrapPanel Visibility="{Binding IsPhase2Placeholder, Converter={StaticResource BoolToVis}}">
+                                                <Button Content="阶段 2 即将上线" IsEnabled="False"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,8,4" />
+                                                <Button Content="发布页" Click="OpenEngineReleasesClicked" Tag="{Binding Kind}"
+                                                        Style="{StaticResource CompactQuietButton}" Margin="0,0,0,4" />
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding StateKey}" Value="ManagedInstalled">
+                                            <Setter TargetName="StateBadge" Property="Background" Value="{DynamicResource ReadySoft}" />
+                                            <Setter TargetName="StateBadgeText" Property="Foreground" Value="{DynamicResource Ready}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding StateKey}" Value="SystemInstalled">
+                                            <Setter TargetName="StateBadge" Property="Background" Value="{DynamicResource AccentSoft}" />
+                                            <Setter TargetName="StateBadgeText" Property="Foreground" Value="{DynamicResource Accent}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding StateKey}" Value="Installing">
+                                            <Setter TargetName="StateBadge" Property="Background" Value="{DynamicResource WarningSoft}" />
+                                            <Setter TargetName="StateBadgeText" Property="Foreground" Value="{DynamicResource Warning}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding StateKey}" Value="PlannedPhase2">
+                                            <Setter TargetName="StateBadge" Property="Background" Value="{DynamicResource PurpleSoft}" />
+                                            <Setter TargetName="StateBadgeText" Property="Foreground" Value="{DynamicResource PurpleAccent}" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- Download Mirror Acceleration Settings -->
+                        <Border Style="{StaticResource DashboardCard}" Margin="0,4,0,12">
+                            <StackPanel>
+                                <TextBlock Text="国内镜像加速设置" FontSize="15.5" FontWeight="Bold" />
+                                <TextBlock Text="为 GitHub 开源引擎与软件更新安装包下载配置 HTTPS 镜像前缀（例如 https://gh-proxy.com/）。若镜像失败将自动回退直连 GitHub。"
+                                           FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,4,0,12" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Grid.Column="0">
+                                        <TextBox x:Name="MirrorPrefixInput" Style="{StaticResource DeviceField}"
+                                                 TextChanged="MirrorPrefixInputChanged"
+                                                 AutomationProperties.AutomationId="MirrorPrefixInput" />
+                                        <TextBlock x:Name="MirrorPlaceholder" Text="例如：https://gh-proxy.com/"
+                                                   Foreground="{DynamicResource Muted}" Opacity="0.6"
+                                                   VerticalAlignment="Center" Margin="14,0,0,0" IsHitTestVisible="False" />
+                                    </Grid>
+                                    <Button Grid.Column="1" Content="保存镜像" Click="SaveMirrorClicked"
+                                            Style="{StaticResource PrimaryButton}" MinHeight="40" Margin="10,0,0,0" />
+                                    <Button Grid.Column="2" Content="清空" Click="ClearMirrorClicked"
+                                            Style="{StaticResource QuietButton}" MinHeight="40" Margin="8,0,0,0" />
+                                </Grid>
+                                <TextBlock x:Name="MirrorFeedbackText" FontSize="12" Foreground="{DynamicResource Muted}"
+                                           Margin="2,8,0,0" Visibility="Collapsed" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Appearance Toggle Card -->
+                        <Border Style="{StaticResource DashboardCard}" Padding="18,14" Margin="0,0,0,12">
+                            <DockPanel>
+                                <CheckBox x:Name="SettingsThemeToggle" DockPanel.Dock="Right"
+                                          Style="{StaticResource ModernToggleSwitch}" Content="深色模式"
+                                          VerticalAlignment="Center"
+                                          Checked="SettingsThemeToggled" Unchecked="SettingsThemeToggled" />
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                    <TextBlock Text="界面外观" FontSize="15.5" FontWeight="Bold" />
+                                    <TextBlock Text="在深邃极客暗色与明亮清晰浅色主题间切换。"
+                                               FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- Upgraded Auto-Update Card (GitHub Release + Velopack + Mirror Acceleration) -->
+                        <Border Style="{StaticResource DashboardCard}" Padding="18,16">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,10">
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Button x:Name="UpdateButton" Content="检查更新" Click="UpdateClicked"
+                                                Style="{StaticResource CompactPrimaryButton}" MinHeight="34" Margin="0,0,8,0"
+                                                AutomationProperties.AutomationId="CheckUpdates" />
+                                        <Button x:Name="OpenReleasePageButton" Content="打开发布页" Click="OpenUpdateReleasePageClicked"
+                                                Style="{StaticResource CompactQuietButton}" MinHeight="34" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock x:Name="AppVersion" FontWeight="Bold" FontSize="15.5" VerticalAlignment="Center" />
+                                        <Border x:Name="UpdateModeBadge" Background="{DynamicResource AccentSoft}"
+                                                CornerRadius="6" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                                            <TextBlock x:Name="UpdateModeBadgeText" Text="直连 Release 更新" FontSize="11"
+                                                       FontWeight="SemiBold" Foreground="{DynamicResource Accent}" />
+                                        </Border>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <TextBlock Text="自动更新仓库源（支持 owner/repo 或 https://github.com/owner/repo）"
+                                           FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,0,0,6" />
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Grid.Column="0">
+                                        <TextBox x:Name="UpdateRepoInput" Style="{StaticResource DeviceField}"
+                                                 TextChanged="UpdateRepoInputChanged"
+                                                 AutomationProperties.AutomationId="UpdateRepoInput" />
+                                        <TextBlock x:Name="UpdateRepoPlaceholder" Text="zhengbaiyang/remote-desk"
+                                                   Foreground="{DynamicResource Muted}" Opacity="0.6"
+                                                   VerticalAlignment="Center" Margin="14,0,0,0" IsHitTestVisible="False" />
+                                    </Grid>
+                                    <Button Grid.Column="1" x:Name="SaveUpdateRepoButton" Content="保存仓库"
+                                            Click="SaveUpdateRepoClicked" Style="{StaticResource CompactQuietButton}"
+                                            MinHeight="40" Margin="10,0,0,0" />
+                                    <Button Grid.Column="2" x:Name="ResetUpdateRepoButton" Content="恢复默认"
+                                            Click="ResetUpdateRepoClicked" Style="{StaticResource CompactQuietButton}"
+                                            MinHeight="40" Margin="8,0,0,0" />
+                                </Grid>
+
+                                <TextBlock x:Name="UpdateRepoFeedback" FontSize="12" Foreground="{DynamicResource Muted}"
+                                           Margin="2,0,0,6" Visibility="Collapsed" />
+
+                                <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" Margin="2,4,0,0" FontSize="12.5"
+                                           Foreground="{DynamicResource Muted}" AutomationProperties.LiveSetting="Polite" />
+
+                                <!-- Update Download Progress -->
+                                <StackPanel x:Name="UpdateProgressPanel" Visibility="Collapsed" Margin="0,10,0,0">
+                                    <DockPanel Margin="0,0,0,5">
+                                        <TextBlock x:Name="UpdateProgressPercentText" DockPanel.Dock="Right"
+                                                   FontSize="11.5" FontWeight="Bold" Foreground="{DynamicResource Accent}" />
+                                        <TextBlock x:Name="UpdateProgressStageText" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                    </DockPanel>
+                                    <ProgressBar x:Name="UpdateProgressBar" Style="{StaticResource ModernProgressBar}"
+                                                 Minimum="0" Maximum="100" />
+                                </StackPanel>
+
+                                <!-- Latest Release Notes Summary -->
+                                <Border x:Name="UpdateReleaseNotesBorder" Style="{StaticResource SubPanelCard}"
+                                        Padding="13,10" Margin="0,10,0,0" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <TextBlock x:Name="UpdateReleaseTitle" FontSize="12.5" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                        <TextBlock x:Name="UpdateReleaseNotesText" FontSize="12" Foreground="{DynamicResource Muted}"
+                                                   TextWrapping="Wrap" MaxHeight="110" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Global Inline Status Banner -->
+                <Border x:Name="StatusBanner" Grid.Row="1" Visibility="Collapsed"
+                        Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource CardBorder}"
+                        BorderThickness="0,1,0,0" Padding="18,9">
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="&#xE8BB;" Click="DismissStatusClicked"
+                                Style="{StaticResource CaptionButton}" Width="24" Height="24" FontSize="10"
+                                ToolTip="关闭提示" AutomationProperties.Name="关闭提示"
+                                AutomationProperties.AutomationId="DismissStatus" />
+                        <TextBlock x:Name="StatusMessage" VerticalAlignment="Center" TextWrapping="Wrap"
+                                   FontSize="12.5" AutomationProperties.LiveSetting="Polite" />
+                    </DockPanel>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </Window>

@@ -1,6 +1,6 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.ComponentModel;
 using System.Security;
 using Microsoft.Win32;
 
@@ -8,10 +8,13 @@ namespace RemoteDesk;
 
 internal static class RustDeskClient
 {
-    public static string? FindExecutable(string? selectedPath)
+    public static string? FindExecutable(string? selectedPath, string? managedPath = null)
     {
         if (IsExecutable(selectedPath))
             return selectedPath;
+
+        if (IsExecutable(managedPath))
+            return managedPath;
 
         string[] candidates =
         [
@@ -105,8 +108,13 @@ internal static class RustDeskClient
 
     public static ProcessStartInfo CreateConnection(string executable, DeviceProfile device)
     {
+        ArgumentNullException.ThrowIfNull(device);
         if (!IsExecutable(executable))
             throw new FileNotFoundException("找不到 RustDesk 程序。", executable);
+
+        var target = !string.IsNullOrEmpty(device.Id) ? device.Id : device.HostAddress;
+        if (string.IsNullOrEmpty(target) || target.StartsWith('-'))
+            throw new ArgumentException("设备缺少有效的 RustDesk 设备 ID 或主机地址。", nameof(device));
 
         var startInfo = new ProcessStartInfo(executable)
         {
@@ -114,8 +122,20 @@ internal static class RustDeskClient
             UseShellExecute = false,
         };
         startInfo.ArgumentList.Add("--connect");
-        startInfo.ArgumentList.Add(device.Id);
+        startInfo.ArgumentList.Add(target);
         return startInfo;
+    }
+
+    public static ProcessStartInfo CreateHostStart(string executable)
+    {
+        if (!IsExecutable(executable))
+            throw new FileNotFoundException("找不到 RustDesk 程序。", executable);
+
+        return new ProcessStartInfo(executable)
+        {
+            WorkingDirectory = Path.GetDirectoryName(executable)!,
+            UseShellExecute = false,
+        };
     }
 
     private static bool IsExecutable(string? path) =>
