@@ -30,7 +30,10 @@ internal sealed class AgentPeerClient : IDisposable
         }
         else
         {
-            _httpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            _httpClient = new HttpClient(new HttpClientHandler { UseProxy = false }, disposeHandler: true)
+            {
+                Timeout = Timeout.InfiniteTimeSpan,
+            };
             _ownsClient = true;
         }
     }

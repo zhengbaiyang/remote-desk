@@ -318,7 +318,7 @@ internal sealed class GameStreamClient
 
     private async Task<string> SendHttpGetAsync(string url, TimeSpan timeout, CancellationToken ct)
     {
-        using var handler = _customHandler is null ? new HttpClientHandler() : null;
+        using var handler = _customHandler is null ? new HttpClientHandler { UseProxy = false } : null;
         using var client = new HttpClient(_customHandler ?? handler!, disposeHandler: false) { Timeout = timeout };
         using var resp = await client.GetAsync(url, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
@@ -332,6 +332,7 @@ internal sealed class GameStreamClient
         {
             handler = new HttpClientHandler
             {
+                UseProxy = false,
                 ClientCertificateOptions = ClientCertificateOption.Manual,
                 ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
             };

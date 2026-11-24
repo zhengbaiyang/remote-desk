@@ -361,6 +361,126 @@ internal static class HostServiceManager
         return running;
     }
 
+    public static bool TryStartSunshineService()
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        foreach (var serviceName in new[] { "SunshineService", "sunshinesvc" })
+        {
+            if (TryStartWindowsService(serviceName))
+                return true;
+        }
+        return false;
+    }
+
+    public static bool TryStopSunshineService()
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        var stoppedAny = false;
+        foreach (var serviceName in new[] { "SunshineService", "sunshinesvc" })
+        {
+            if (TryStopWindowsService(serviceName))
+                stoppedAny = true;
+        }
+        return stoppedAny;
+    }
+
+    private static bool TryStartWindowsService(string serviceName)
+    {
+        const uint ScManagerConnect = 0x0001;
+        const uint ServiceQueryStatus = 0x0004;
+        const uint ServiceStart = 0x0010;
+        const uint ServiceRunning = 0x00000004;
+
+        var scm = OpenSCManagerW(null, null, ScManagerConnect);
+        if (scm == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            var service = OpenServiceW(scm, serviceName, ServiceQueryStatus | ServiceStart);
+            if (service == IntPtr.Zero)
+                return false;
+
+            try
+            {
+                if (QueryServiceStatus(service, out var status) && status.CurrentState == ServiceRunning)
+                    return true;
+
+                if (!StartServiceW(service, 0, null))
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    if (err != 1056) // ERROR_SERVICE_ALREADY_RUNNING
+                        return false;
+                }
+
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (QueryServiceStatus(service, out status) && status.CurrentState == ServiceRunning)
+                        return true;
+                    Thread.Sleep(150);
+                }
+                return false;
+            }
+            finally
+            {
+                CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            CloseServiceHandle(scm);
+        }
+    }
+
+    private static bool TryStopWindowsService(string serviceName)
+    {
+        const uint ScManagerConnect = 0x0001;
+        const uint ServiceQueryStatus = 0x0004;
+        const uint ServiceStop = 0x0020;
+        const uint ServiceControlStop = 0x00000001;
+        const uint ServiceStopped = 0x00000001;
+
+        var scm = OpenSCManagerW(null, null, ScManagerConnect);
+        if (scm == IntPtr.Zero)
+            return false;
+
+        try
+        {
+            var service = OpenServiceW(scm, serviceName, ServiceQueryStatus | ServiceStop);
+            if (service == IntPtr.Zero)
+                return false;
+
+            try
+            {
+                if (QueryServiceStatus(service, out var status) && status.CurrentState == ServiceStopped)
+                    return true;
+
+                ControlService(service, ServiceControlStop, out _);
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (QueryServiceStatus(service, out status) && status.CurrentState == ServiceStopped)
+                        return true;
+                    Thread.Sleep(150);
+                }
+                return false;
+            }
+            finally
+            {
+                CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            CloseServiceHandle(scm);
+        }
+    }
+
     private static bool IsWindowsServiceRegistered(string serviceName)
     {
         if (!OperatingSystem.IsWindows())
@@ -528,6 +648,14 @@ internal static class HostServiceManager
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr OpenServiceW(IntPtr scManager, string serviceName, uint desiredAccess);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool StartServiceW(IntPtr service, int numServiceArgs, string[]? serviceArgVectors);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ControlService(IntPtr service, uint control, out ServiceStatusNative serviceStatus);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

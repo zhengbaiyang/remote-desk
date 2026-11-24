@@ -10,6 +10,7 @@ internal static class AgentIpcClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromMilliseconds(1200);
+    private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(5);
 
     public static async Task<AgentRuntimeStatus?> TryGetStatusAsync(CancellationToken ct = default)
     {
@@ -17,7 +18,14 @@ internal static class AgentIpcClient
         if (!resp.Ok || string.IsNullOrWhiteSpace(resp.PayloadJson))
             return null;
 
-        return JsonSerializer.Deserialize<AgentRuntimeStatus>(resp.PayloadJson, JsonOptions);
+        try
+        {
+            return JsonSerializer.Deserialize<AgentRuntimeStatus>(resp.PayloadJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public static Task<(bool Ok, AgentRuntimeStatus? Status, string? Error)> ApplyConfigAsync(
@@ -52,10 +60,18 @@ internal static class AgentIpcClient
         if (!resp.Ok)
             return (false, null, resp.Error ?? "守护服务操作失败。");
 
-        var status = string.IsNullOrWhiteSpace(resp.PayloadJson)
-            ? null
-            : JsonSerializer.Deserialize<AgentRuntimeStatus>(resp.PayloadJson, JsonOptions);
-        return (true, status, null);
+        if (string.IsNullOrWhiteSpace(resp.PayloadJson))
+            return (true, null, null);
+
+        try
+        {
+            var status = JsonSerializer.Deserialize<AgentRuntimeStatus>(resp.PayloadJson, JsonOptions);
+            return (true, status, null);
+        }
+        catch (JsonException)
+        {
+            return (false, null, "守护服务返回了无效的状态 JSON，请重启后台守护服务。");
+        }
     }
 
     private static async Task<AgentIpcResponse> SendAsync(AgentIpcRequest request, CancellationToken ct)
@@ -67,16 +83,23 @@ internal static class AgentIpcClient
             connectCts.CancelAfter(ConnectTimeout);
             await pipe.ConnectAsync(connectCts.Token).ConfigureAwait(false);
 
+            using var ioCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            ioCts.CancelAfter(ReadTimeout);
+
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
 
             await writer.WriteLineAsync(JsonSerializer.Serialize(request, JsonOptions)).ConfigureAwait(false);
-            var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(line))
+            var payload = await reader.ReadToEndAsync(ioCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(payload))
                 return new AgentIpcResponse(false, null, "守护服务未返回有效响应。");
 
-            return JsonSerializer.Deserialize<AgentIpcResponse>(line, JsonOptions)
+            return JsonSerializer.Deserialize<AgentIpcResponse>(payload, JsonOptions)
                 ?? new AgentIpcResponse(false, null, "无法解析守护服务响应。");
+        }
+        catch (JsonException)
+        {
+            return new AgentIpcResponse(false, null, "守护服务响应格式异常，请稍后重试或重启守护服务。");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

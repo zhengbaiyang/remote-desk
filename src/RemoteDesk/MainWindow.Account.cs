@@ -288,7 +288,14 @@ public partial class MainWindow
         if (!IsAccountLoggedIn() || isAccountBusy)
             return;
 
-        await SyncWithServerAndApplyAsync(userInitiated: false);
+        try
+        {
+            await SyncWithServerAndApplyAsync(userInitiated: false);
+        }
+        catch
+        {
+            // Prevent background sync timer ticks from terminating the UI process.
+        }
     }
 
     private async Task SyncWithServerAndApplyAsync(bool userInitiated)
@@ -381,10 +388,15 @@ public partial class MainWindow
             if (userInitiated)
                 ShowStatus("账号登录状态已过期，请在「网络节点」重新登录。", warning: true);
         }
-        catch (Exception ex) when (ex is SyncApiException or SyncCertificateMismatchException or HttpRequestException or TaskCanceledException or IOException)
+        catch (Exception ex) when (ex is SyncApiException or SyncCertificateMismatchException or HttpRequestException or TaskCanceledException or IOException or System.Text.Json.JsonException)
         {
             if (userInitiated)
                 ShowSyncFeedback($"同步失败：{ex.Message}", warning: true);
+        }
+        catch (Exception ex)
+        {
+            if (userInitiated)
+                ShowSyncFeedback($"同步异常：{ex.Message}", warning: true);
         }
     }
 
@@ -480,12 +492,19 @@ public partial class MainWindow
         if (!OperatingSystem.IsWindows())
             return false;
 
-        var (_, running) = WindowsServiceInstaller.GetServiceStatus();
-        if (!running)
-            return false;
+        try
+        {
+            var (_, running) = WindowsServiceInstaller.GetServiceStatus();
+            if (!running)
+                return false;
 
-        var (ok, _, _) = await AgentIpcClient.ApplyConfigAsync(BuildAgentConfigPayload());
-        return ok;
+            var (ok, _, _) = await AgentIpcClient.ApplyConfigAsync(BuildAgentConfigPayload());
+            return ok;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task PushConfigToDaemonOrApplyLocallyAsync(bool autoStartMesh)

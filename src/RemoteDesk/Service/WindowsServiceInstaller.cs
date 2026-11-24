@@ -111,6 +111,14 @@ internal static class WindowsServiceInstaller
             }
             else
             {
+                if (WindowsServiceInterop.QueryServiceStatus(svc, out var curStatus) &&
+                    curStatus.CurrentState != WindowsServiceInterop.ServiceStopped)
+                {
+                    WindowsServiceInterop.ControlService(svc, WindowsServiceInterop.ServiceControlStop, out _);
+                    WaitForState(svc, WindowsServiceInterop.ServiceStopped, TimeSpan.FromSeconds(10));
+                    Thread.Sleep(300);
+                }
+
                 WindowsServiceInterop.ChangeServiceConfigW(
                     svc,
                     WindowsServiceInterop.ServiceWin32OwnProcess,

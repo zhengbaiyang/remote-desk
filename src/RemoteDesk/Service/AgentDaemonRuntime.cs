@@ -13,10 +13,12 @@ namespace RemoteDesk;
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 internal sealed class AgentDaemonRuntime : IDisposable
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    private static readonly JsonSerializerOptions FileJsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
     };
+
+    private static readonly JsonSerializerOptions IpcJsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly SemaphoreSlim _configLock = new(1, 1);
     private readonly SyncApiClient _syncClient = new();
@@ -29,6 +31,8 @@ internal sealed class AgentDaemonRuntime : IDisposable
     private Task? _pipeLoopTask;
     private Task? _checkinLoopTask;
     private string? _lastAppliedEasyTierFingerprint;
+    private DateTimeOffset _lastSunshineStartUtc = DateTimeOffset.MinValue;
+    private int _sunshineConsecutiveRestarts;
     private long? _lastCheckinUtc;
     private string? _lastError;
 
@@ -199,22 +203,22 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 AgentIpcRequest? req;
                 try
                 {
-                    req = JsonSerializer.Deserialize<AgentIpcRequest>(line, JsonOptions);
+                    req = JsonSerializer.Deserialize<AgentIpcRequest>(line, IpcJsonOptions);
                 }
                 catch (JsonException)
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new AgentIpcResponse(false, null, "IPC 请求 JSON 无效。"), JsonOptions)).ConfigureAwait(false);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new AgentIpcResponse(false, null, "IPC 请求 JSON 无效。"), IpcJsonOptions)).ConfigureAwait(false);
                     return;
                 }
 
                 if (req is null)
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new AgentIpcResponse(false, null, "IPC 请求为空。"), JsonOptions)).ConfigureAwait(false);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new AgentIpcResponse(false, null, "IPC 请求为空。"), IpcJsonOptions)).ConfigureAwait(false);
                     return;
                 }
 
                 var response = await ExecuteIpcCommandAsync(req, ct).ConfigureAwait(false);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(response, JsonOptions)).ConfigureAwait(false);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(response, IpcJsonOptions)).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -233,19 +237,27 @@ internal sealed class AgentDaemonRuntime : IDisposable
             case "get_status":
             {
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "apply_config":
             {
-                var payload = string.IsNullOrWhiteSpace(req.PayloadJson)
-                    ? null
-                    : JsonSerializer.Deserialize<AgentApplyConfigPayload>(req.PayloadJson, JsonOptions);
+                AgentApplyConfigPayload? payload;
+                try
+                {
+                    payload = string.IsNullOrWhiteSpace(req.PayloadJson)
+                        ? null
+                        : JsonSerializer.Deserialize<AgentApplyConfigPayload>(req.PayloadJson, IpcJsonOptions);
+                }
+                catch (JsonException)
+                {
+                    return new AgentIpcResponse(false, null, "配置载荷 JSON 无效。");
+                }
                 if (payload is null)
                     return new AgentIpcResponse(false, null, "缺少配置载荷。");
 
                 await ApplyConfigPayloadAsync(payload, ct).ConfigureAwait(false);
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "start_easytier":
             {
@@ -264,7 +276,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 }
 
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "stop_easytier":
             {
@@ -285,7 +297,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 }
 
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "start_sunshine":
             {
@@ -294,6 +306,8 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 {
                     _config = _config with { HostModeEnabled = true };
                     SaveConfigToDisk(_config);
+                    _sunshineConsecutiveRestarts = 0;
+                    _lastSunshineStartUtc = DateTimeOffset.MinValue;
                     EnsureSunshineRunning();
                 }
                 finally
@@ -302,7 +316,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 }
 
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "stop_sunshine":
             {
@@ -311,7 +325,9 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 {
                     _config = _config with { HostModeEnabled = false };
                     SaveConfigToDisk(_config);
+                    HostServiceManager.TryStopSunshineService();
                     HostServiceManager.StopSunshineHost();
+                    _sunshineConsecutiveRestarts = 0;
                 }
                 finally
                 {
@@ -319,13 +335,21 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 }
 
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             case "set_security_pin":
             {
-                var pinPayload = string.IsNullOrWhiteSpace(req.PayloadJson)
-                    ? null
-                    : JsonSerializer.Deserialize<AgentSetSecurityPinPayload>(req.PayloadJson, JsonOptions);
+                AgentSetSecurityPinPayload? pinPayload;
+                try
+                {
+                    pinPayload = string.IsNullOrWhiteSpace(req.PayloadJson)
+                        ? null
+                        : JsonSerializer.Deserialize<AgentSetSecurityPinPayload>(req.PayloadJson, IpcJsonOptions);
+                }
+                catch (JsonException)
+                {
+                    return new AgentIpcResponse(false, null, "安全密码配置 JSON 无效。");
+                }
                 if (pinPayload is null)
                     return new AgentIpcResponse(false, null, "缺少安全密码配置。");
 
@@ -369,7 +393,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
 
                 _ = TrySendCheckinAsync(ct);
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
-                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, JsonOptions));
+                return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
             default:
                 return new AgentIpcResponse(false, null, $"未知命令：{req.Command}");
@@ -488,7 +512,10 @@ internal sealed class AgentDaemonRuntime : IDisposable
             {
                 var wasRunning = HostServiceManager.GetHostStatus(sunshineExe).SunshineRunning;
                 if (wasRunning)
+                {
+                    HostServiceManager.TryStopSunshineService();
                     HostServiceManager.StopSunshineHost();
+                }
 
                 var generatedPass = SunshineManager.GenerateRandomPassword();
                 var credsStart = SunshineManager.CreateSetCredentialsStartInfo(sunshineExe, SunshineManager.DefaultAdminUser, generatedPass);
@@ -506,11 +533,44 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 Log("Initialized auto-managed Sunshine admin credentials.");
             }
 
-            if (!HostServiceManager.GetHostStatus(sunshineExe).SunshineRunning)
+            var hostStatus = HostServiceManager.GetHostStatus(sunshineExe);
+            if (hostStatus.SunshineRunning)
             {
-                HostServiceManager.StartSunshineHost(sunshineExe);
-                Log("Started Sunshine host process.");
+                if (_lastSunshineStartUtc != DateTimeOffset.MinValue &&
+                    DateTimeOffset.UtcNow - _lastSunshineStartUtc >= TimeSpan.FromSeconds(60))
+                {
+                    _sunshineConsecutiveRestarts = 0;
+                }
+                return;
             }
+
+            var backoffSeconds = Math.Min(300, 30 * (1 << Math.Min(_sunshineConsecutiveRestarts, 3)));
+            if (_sunshineConsecutiveRestarts > 0 &&
+                DateTimeOffset.UtcNow - _lastSunshineStartUtc < TimeSpan.FromSeconds(backoffSeconds))
+            {
+                return;
+            }
+
+            _lastSunshineStartUtc = DateTimeOffset.UtcNow;
+            _sunshineConsecutiveRestarts++;
+
+            if (hostStatus.SunshineServiceRegistered && HostServiceManager.TryStartSunshineService())
+            {
+                Log("Started Sunshine Windows service.");
+                return;
+            }
+
+            if (_isSystemService)
+            {
+                if (_hostOps.LaunchInteractiveExecutable(sunshineExe))
+                    Log("Started Sunshine host process in active console session.");
+                else
+                    Log("Skipped starting Sunshine in Session 0 (no active console session available).");
+                return;
+            }
+
+            HostServiceManager.StartSunshineHost(sunshineExe);
+            Log("Started Sunshine host process.");
         }
         catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or ArgumentException)
         {
@@ -655,7 +715,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
 
         try
         {
-            var loaded = JsonSerializer.Deserialize<AgentConfigDocument>(File.ReadAllText(path, Encoding.UTF8), JsonOptions);
+            var loaded = JsonSerializer.Deserialize<AgentConfigDocument>(File.ReadAllText(path, Encoding.UTF8), FileJsonOptions);
             _config = loaded ?? new AgentConfigDocument();
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
@@ -672,7 +732,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
         var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(tmp, JsonSerializer.Serialize(config, JsonOptions), new UTF8Encoding(false));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(config, FileJsonOptions), new UTF8Encoding(false));
             File.Move(tmp, path, overwrite: true);
         }
         finally

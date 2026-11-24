@@ -319,6 +319,7 @@ internal sealed class SyncApiClient
 
         var handler = new HttpClientHandler
         {
+            UseProxy = false,
             ServerCertificateCustomValidationCallback = (_, cert, _, sslPolicyErrors) =>
             {
                 if (sslPolicyErrors == SslPolicyErrors.None)

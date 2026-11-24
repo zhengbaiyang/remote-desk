@@ -280,6 +280,42 @@ internal static class Milestone3Checks
             Equal(true, text.Contains("GNU GENERAL PUBLIC LICENSE", StringComparison.Ordinal));
             Equal(true, text.Contains("Version 3", StringComparison.Ordinal));
         }),
+
+        ("Agent IPC JSON uses single-line serialization and reads legacy indented responses safely", () =>
+        {
+            var compactOpts = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            var indentedOpts = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
+
+            var status = new AgentRuntimeStatus(
+                ServiceRunning: true,
+                IsSystemService: true,
+                EasyTierRunning: true,
+                EasyTierVirtualIpv4: "10.126.126.2",
+                EasyTierPeers: [],
+                EasyTierDetail: "ok",
+                SunshineRunning: false,
+                SunshineManagedReady: false,
+                AgentPort: 47999,
+                HostModeEnabled: true,
+                SecurityPinRequired: false,
+                LastCheckinUtc: 1_750_000_000L,
+                LastError: null);
+
+            var payloadJson = JsonSerializer.Serialize(status, compactOpts);
+            var compactLine = JsonSerializer.Serialize(new AgentIpcResponse(true, payloadJson), compactOpts);
+            Equal(false, compactLine.Contains('\n'));
+            Equal(false, compactLine.Contains('\r'));
+
+            // Legacy multi-line indented envelope read fully via StreamReader.ReadToEnd parses cleanly.
+            var legacyIndented = JsonSerializer.Serialize(new AgentIpcResponse(true, JsonSerializer.Serialize(status, indentedOpts)), indentedOpts);
+            using var ms = new MemoryStream(Encoding.UTF8.GetBytes(legacyIndented));
+            using var reader = new StreamReader(ms, Encoding.UTF8);
+            var fullRead = reader.ReadToEnd();
+            var parsedResp = JsonSerializer.Deserialize<AgentIpcResponse>(fullRead, compactOpts);
+            Equal(true, parsedResp is { Ok: true, PayloadJson.Length: > 0 });
+            var parsedStatus = JsonSerializer.Deserialize<AgentRuntimeStatus>(parsedResp!.PayloadJson!, compactOpts);
+            Equal("10.126.126.2", parsedStatus?.EasyTierVirtualIpv4);
+        }),
     ];
 
     private sealed class PeerServerBridgeHandler(AgentPeerServer server) : HttpMessageHandler

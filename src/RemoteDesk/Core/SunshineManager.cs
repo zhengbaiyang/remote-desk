@@ -163,6 +163,7 @@ internal static class SunshineManager
     {
         var handler = new HttpClientHandler
         {
+            UseProxy = false,
             ServerCertificateCustomValidationCallback = (req, _, _, _) =>
             {
                 var host = req.RequestUri?.Host;

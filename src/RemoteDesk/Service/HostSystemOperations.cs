@@ -60,9 +60,8 @@ internal sealed class HostSystemOperations : IDisposable
     private async Task<AgentClipboardDto> GetClipboardAsync(CancellationToken ct)
     {
         var resp = await SendToSessionBridgeAsync(new SessionBridgeRequest("clipboard_get"), ct).ConfigureAwait(false);
-        if (resp.Ok && !string.IsNullOrWhiteSpace(resp.PayloadJson))
-            return JsonSerializer.Deserialize<AgentClipboardDto>(resp.PayloadJson, JsonOptions) ?? new AgentClipboardDto(0, "none", null, null, null);
-        return new AgentClipboardDto(0, "none", null, null, null);
+        return TryDeserializePayload<AgentClipboardDto>(resp.PayloadJson)
+            ?? new AgentClipboardDto(0, "none", null, null, null);
     }
 
     private async Task<AgentClipboardSetResponseDto> SetClipboardAsync(AgentClipboardSetRequestDto req, CancellationToken ct)
@@ -70,17 +69,16 @@ internal sealed class HostSystemOperations : IDisposable
         var resp = await SendToSessionBridgeAsync(
             new SessionBridgeRequest("clipboard_set", JsonSerializer.Serialize(req, JsonOptions)),
             ct).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(resp.PayloadJson))
-            return JsonSerializer.Deserialize<AgentClipboardSetResponseDto>(resp.PayloadJson, JsonOptions) ?? new AgentClipboardSetResponseDto(resp.Ok, Message: resp.Error);
-        return new AgentClipboardSetResponseDto(resp.Ok, Error: resp.Ok ? null : "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "桌面交互会话不可用。");
+        return TryDeserializePayload<AgentClipboardSetResponseDto>(resp.PayloadJson)
+            ?? new AgentClipboardSetResponseDto(resp.Ok, Error: resp.Ok ? null : "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "桌面交互会话不可用。");
     }
 
     private async Task<string> ResolveUploadDirectoryAsync(CancellationToken ct)
     {
         var resp = await SendToSessionBridgeAsync(new SessionBridgeRequest("get_upload_dir"), ct).ConfigureAwait(false);
-        if (resp.Ok && !string.IsNullOrWhiteSpace(resp.PayloadJson))
+        if (resp.Ok)
         {
-            var dir = JsonSerializer.Deserialize<string>(resp.PayloadJson, JsonOptions);
+            var dir = TryDeserializePayload<string>(resp.PayloadJson);
             if (!string.IsNullOrWhiteSpace(dir))
                 return dir;
         }
@@ -91,9 +89,9 @@ internal sealed class HostSystemOperations : IDisposable
     private async Task<AgentDisplayStateDto> GetDisplayStateAsync(CancellationToken ct)
     {
         var resp = await SendToSessionBridgeAsync(new SessionBridgeRequest("display_get"), ct).ConfigureAwait(false);
-        if (resp.Ok && !string.IsNullOrWhiteSpace(resp.PayloadJson))
+        if (resp.Ok)
         {
-            var dto = JsonSerializer.Deserialize<AgentDisplayStateDto>(resp.PayloadJson, JsonOptions);
+            var dto = TryDeserializePayload<AgentDisplayStateDto>(resp.PayloadJson);
             if (dto is not null)
                 return dto;
         }
@@ -106,17 +104,15 @@ internal sealed class HostSystemOperations : IDisposable
         var resp = await SendToSessionBridgeAsync(
             new SessionBridgeRequest("display_apply", JsonSerializer.Serialize(req, JsonOptions)),
             ct).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(resp.PayloadJson))
-            return JsonSerializer.Deserialize<AgentDisplayApplyResultDto>(resp.PayloadJson, JsonOptions) ?? new AgentDisplayApplyResultDto(resp.Ok, false, Message: resp.Error);
-        return new AgentDisplayApplyResultDto(false, false, Error: "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "当前未登录用户桌面，无法调整显示器分辨率。");
+        return TryDeserializePayload<AgentDisplayApplyResultDto>(resp.PayloadJson)
+            ?? new AgentDisplayApplyResultDto(false, false, Error: "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "当前未登录用户桌面，无法调整显示器分辨率。");
     }
 
     private async Task<AgentDisplayApplyResultDto> RestoreDisplayModeAsync(CancellationToken ct)
     {
         var resp = await SendToSessionBridgeAsync(new SessionBridgeRequest("display_restore"), ct).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(resp.PayloadJson))
-            return JsonSerializer.Deserialize<AgentDisplayApplyResultDto>(resp.PayloadJson, JsonOptions) ?? new AgentDisplayApplyResultDto(resp.Ok, false, Message: resp.Error);
-        return new AgentDisplayApplyResultDto(false, false, Error: "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "桌面交互会话不可用。");
+        return TryDeserializePayload<AgentDisplayApplyResultDto>(resp.PayloadJson)
+            ?? new AgentDisplayApplyResultDto(false, false, Error: "BRIDGE_UNAVAILABLE", Message: resp.Error ?? "桌面交互会话不可用。");
     }
 
     private async Task<AgentPrivacyResultDto> SetPrivacyScreenAsync(bool enabled, CancellationToken ct)
@@ -124,9 +120,8 @@ internal sealed class HostSystemOperations : IDisposable
         var resp = await SendToSessionBridgeAsync(
             new SessionBridgeRequest("privacy_set", JsonSerializer.Serialize(new AgentPrivacyRequestDto(enabled), JsonOptions)),
             ct).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(resp.PayloadJson))
-            return JsonSerializer.Deserialize<AgentPrivacyResultDto>(resp.PayloadJson, JsonOptions) ?? new AgentPrivacyResultDto(resp.Ok, enabled, Message: resp.Error);
-        return new AgentPrivacyResultDto(false, false, "BRIDGE_UNAVAILABLE", resp.Error ?? "桌面交互会话不可用，无法启用防窥黑屏。");
+        return TryDeserializePayload<AgentPrivacyResultDto>(resp.PayloadJson)
+            ?? new AgentPrivacyResultDto(false, false, "BRIDGE_UNAVAILABLE", resp.Error ?? "桌面交互会话不可用，无法启用防窥黑屏。");
     }
 
     private async Task<AgentPowerResultDto> ExecutePowerActionAsync(string action, CancellationToken ct)
@@ -134,9 +129,8 @@ internal sealed class HostSystemOperations : IDisposable
         if (action == "lock")
         {
             var resp = await SendToSessionBridgeAsync(new SessionBridgeRequest("power_lock"), ct).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(resp.PayloadJson))
-                return JsonSerializer.Deserialize<AgentPowerResultDto>(resp.PayloadJson, JsonOptions) ?? new AgentPowerResultDto(resp.Ok, action, Message: resp.Error);
-            return new AgentPowerResultDto(false, action, "BRIDGE_UNAVAILABLE", resp.Error ?? "无法连接用户桌面会话，无法锁屏。");
+            return TryDeserializePayload<AgentPowerResultDto>(resp.PayloadJson)
+                ?? new AgentPowerResultDto(false, action, "BRIDGE_UNAVAILABLE", resp.Error ?? "无法连接用户桌面会话，无法锁屏。");
         }
 
         string args = action switch
@@ -166,6 +160,21 @@ internal sealed class HostSystemOperations : IDisposable
         catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException)
         {
             return new AgentPowerResultDto(false, action, "POWER_EXEC_FAILED", $"执行电源操作失败：{ex.Message}");
+        }
+    }
+
+    private static T? TryDeserializePayload<T>(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return default;
+
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return default;
         }
     }
 
@@ -205,12 +214,16 @@ internal sealed class HostSystemOperations : IDisposable
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
 
             await writer.WriteLineAsync(JsonSerializer.Serialize(request, JsonOptions)).ConfigureAwait(false);
-            var line = await reader.ReadLineAsync(ioCts.Token).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(line))
+            var raw = await reader.ReadToEndAsync(ioCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(raw))
                 return new SessionBridgeResponse(false, Error: "交互桥接未返回有效响应。");
 
-            return JsonSerializer.Deserialize<SessionBridgeResponse>(line, JsonOptions)
+            return JsonSerializer.Deserialize<SessionBridgeResponse>(raw, JsonOptions)
                 ?? new SessionBridgeResponse(false, Error: "无法解析交互桥接响应。");
+        }
+        catch (JsonException)
+        {
+            return new SessionBridgeResponse(false, Error: "交互桥接返回了无效的 JSON 数据。");
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException or UnauthorizedAccessException)
         {
@@ -266,8 +279,11 @@ internal sealed class HostSystemOperations : IDisposable
         }
     }
 
-    private bool LaunchInActiveConsoleSession(string exePath)
+    internal bool LaunchInteractiveExecutable(string exePath, string arguments = "")
     {
+        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+            return false;
+
         var sessionId = WtsGetActiveConsoleSessionId();
         if (sessionId == 0xFFFFFFFF)
             return false;
@@ -293,7 +309,7 @@ internal sealed class HostSystemOperations : IDisposable
                 lpDesktop = @"winsta0\default",
             };
 
-            var cmdLine = $"\"{exePath}\" --session-bridge";
+            var cmdLine = string.IsNullOrWhiteSpace(arguments) ? $"\"{exePath}\"" : $"\"{exePath}\" {arguments}";
             var flags = CreateNoWindow | (envBlock != IntPtr.Zero ? CreateUnicodeEnvironment : 0u);
             var ok = CreateProcessAsUserW(
                 primaryToken,
@@ -322,6 +338,9 @@ internal sealed class HostSystemOperations : IDisposable
             CloseHandle(userToken);
         }
     }
+
+    private bool LaunchInActiveConsoleSession(string exePath) =>
+        LaunchInteractiveExecutable(exePath, "--session-bridge");
 
     private const uint MaximumAllowed = 0x02000000;
     private const int SecurityImpersonation = 2;
