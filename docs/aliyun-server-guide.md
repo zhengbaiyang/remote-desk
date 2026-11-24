@@ -1,9 +1,9 @@
 # RemoteDesk 阿里云自建节点部署与 300 元券选型指南
 
-本指南面向持有 **300 元阿里云高校学生 / 个人代金券** 的用户，帮助你用最低成本搭建一套属于自己的 **EasyTier P2P 引导与私有中继节点**（可选同步部署 **RustDesk 自建中继 `hbbs/hbbr`**）。
+本指南面向持有 **300 元阿里云高校学生 / 个人代金券** 的用户，帮助你用最低成本搭建一套属于自己的 **EasyTier P2P 引导与私有中继 + 账号与设备云同步服务**（可选保留传统 RustDesk 中继兼容配置）。
 
 部署完成后：
-- **同校园网 / 同局域网 / NAT 可打洞时**：设备间直接建立 **P2P 加密直连**，流量不经阿里云，支持 Moonlight 1080p120 / 2K60 高刷串流，几乎零流量费；
+- **同校园网 / 同局域网 / NAT 可打洞时**：设备间直接建立 **P2P 加密直连**，流量不经阿里云，支持 RemoteDesk 内置 1080p120 / 2K60 高刷串流，几乎零流量费；
 - **跨网严格对称 NAT 无法打洞时**：自动回退到你的阿里云高带宽节点进行私有中继兜底，且通过白名单机制彻底杜绝陌生人蹭带宽。
 
 ---
@@ -37,7 +37,7 @@ EasyTier 仅运行在无虚拟网卡模式（`--no-tun`），内存占用通常�
 
 - **选离学校和家里最近的国内地域**：例如华东优先上海/杭州、华北优先北京/张家口、华南优先广州/深圳、西南优先成都。距离越近，握手越快，万一走中继延迟也越低（通常 15~35ms）。
 - **严禁选择 1~3Mbps 固定小水管！**
-  - 1~3Mbps 固定带宽看似「不限流量」，但一旦跨网走中继，实际传输速度上限只有 `128~375 KB/s`：RustDesk 办公拖动窗口都会严重掉帧糊屏，Moonlight 串流（1080p60 最低建议 12Mbps、高刷 35~45Mbps）更是完全不可用。
+  - 1~3Mbps 固定带宽看似「不限流量」，但一旦跨网走中继，实际传输速度上限只有 `128~375 KB/s`：远控桌面拖动窗口会明显掉帧糊屏，高刷串流（1080p60 最低建议 12Mbps、高刷 35~45Mbps）更是完全不可用。
 - **结算页防坑**：
   - 确认勾选了 **300 元代金券**，留意代金券有效期与可抵扣产品范围（ECS / 轻量应用服务器）；
   - 关闭不必要的「自动续费」，避免券用完后扣余额；
@@ -82,13 +82,13 @@ cd remote-desk
 
 ### 第 2 步：执行一键部署脚本
 
-**模式 A：仅部署 EasyTier（推荐，最轻量省内存）**
+**模式 A：部署 EasyTier + 账号与设备云同步服务（推荐，v2.0 默认方案）**
 
 ```bash
 bash server/deploy.sh
 ```
 
-**模式 B：同时部署 EasyTier + RustDesk 自建中继（双引擎全自建）**
+**模式 B：额外启用旧版可选 RustDesk 中继（仅旧客户端兼容需要时使用）**
 
 ```bash
 bash server/deploy.sh --with-rustdesk
@@ -97,8 +97,8 @@ bash server/deploy.sh --with-rustdesk
 脚本会自动完成以下工作：
 1. 检查本机是否已安装 `docker` 与 `docker compose`（未安装时会直接给出适配 Ubuntu 与 Alibaba Cloud Linux 的安装命令）；
 2. 首次运行时自动从 `server/.env.example` 生成 `server/.env`（权限自动设为 `600`），并使用 `openssl` 自动生成 32 位高强度随机 `EASYTIER_NETWORK_SECRET`；
-3. 自动探测当前阿里云公网 IPv4 并让你回车确认（也支持手动输入已解析的域名）；
-4. 拉取镜像并启动容器，同时自动注入 `--relay-network-whitelist`（EasyTier）与 `-k _`（RustDesk）防盗刷参数；
+3. 自动探测当前阿里云公网 IPv4 并自动签发 10 年期自签名 TLS 证书与随机邀请码；
+4. 拉取镜像并启动容器，同时自动注入 `--relay-network-whitelist`（EasyTier）防盗刷参数；
 5. 部署完成后，在终端直接打印**开服结果卡片**（含安全组端口、RemoteDesk 可直接复制的三项参数，以及开启 RustDesk 时自动生成的 `id_ed25519.pub` 公钥）。
 
 > **常用运维命令**（在仓库根目录执行）：
@@ -179,7 +179,7 @@ bash server/deploy.sh --with-rustdesk
 ### 3. 公网开放端口会被扫描器蹭流量 / 盗刷阿里云费用吗？
 
 本部署套件默认内置了双层防盗刷保护，开箱即生效：
-- **EasyTier 白名单隔离**：`server/docker-compose.yml` 强制启用了 `--relay-network-whitelist ${EASYTIER_NETWORK_NAME}`，阿里云节点**只允许为你的私有网络名称提供中继转发**；叠加高强度随机 `EASYTIER_NETWORK_SECRET` 端到端加密认证，公网扫描器既无法加入你的组网，也无法借你的节点中继流量。
+- **EasyTier 白名单隔离**：`server/docker-compose.yml` 强制启用了 `--relay-network-whitelist ${EASYTIER_NETWORK_PREFIX}-*`，阿里云节点**只允许为本服注册账号分配的私有网络提供中继转发**；叠加高强度随机网络密钥端到端加密认证，公网扫描器既无法加入你的组网，也无法借你的节点中继流量。
 - **RustDesk 强制公钥鉴权**：启用 `--with-rustdesk` 时，`hbbs` 与 `hbbr` 均带有 `-k _` 参数，强制验证服务器自动生成的 Ed25519 公钥（`server/data/rustdesk/id_ed25519.pub`），未配置正确公钥的任何陌生客户端都会被立即拒绝。
 
 ### 4. 国内阿里云服务器执行 `deploy.sh` 时 `docker compose pull` 超时怎么办？
