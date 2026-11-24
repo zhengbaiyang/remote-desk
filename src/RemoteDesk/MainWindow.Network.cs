@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Shapes;
+using RemoteDesk.UI;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
@@ -439,10 +440,12 @@ public partial class MainWindow
             SetHostBadge(EasyTierStatusBadge, EasyTierStatusBadgeText, "已组网", "ReadySoft", "Ready");
             NetworkNavDot.SetResourceReference(Shape.FillProperty, "Ready");
             NetworkNavDot.Opacity = 1.0;
+            MotionBehaviors.SetEnablePulse(NetworkNavDot, true);
         }
         else if (status.Installed)
         {
             SetHostBadge(EasyTierStatusBadge, EasyTierStatusBadgeText, "未运行", "WarningSoft", "Warning");
+            MotionBehaviors.SetEnablePulse(NetworkNavDot, false);
             var configured = settings.EasyTier is { Enabled: true };
             NetworkNavDot.SetResourceReference(Shape.FillProperty, configured ? "Accent" : "Muted");
             NetworkNavDot.Opacity = configured ? 0.9 : 0.45;
@@ -450,6 +453,7 @@ public partial class MainWindow
         else
         {
             SetHostBadge(EasyTierStatusBadge, EasyTierStatusBadgeText, "未安装", "SurfaceSubtle", "Muted");
+            MotionBehaviors.SetEnablePulse(NetworkNavDot, false);
             NetworkNavDot.SetResourceReference(Shape.FillProperty, "Muted");
             NetworkNavDot.Opacity = 0.45;
         }

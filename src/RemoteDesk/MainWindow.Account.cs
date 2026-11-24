@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using RemoteDesk.Streaming;
+using RemoteDesk.UI;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
@@ -44,6 +45,7 @@ public partial class MainWindow
             SyncUsernameInput.Text = savedAccount.Username;
 
         UpdateSyncAuthPlaceholders();
+        UpdateAccountModeIndicator(animate: false);
         RefreshAccountUi();
     }
 
@@ -88,6 +90,7 @@ public partial class MainWindow
         SyncInviteCodePanel.Visibility = Visibility.Collapsed;
         SyncAuthSubmitButton.Content = "登录并自动组网";
         SyncAccountFeedback.Visibility = Visibility.Collapsed;
+        UpdateAccountModeIndicator(animate: IsLoaded);
     }
 
     private void SelectAccountRegisterModeClicked(object sender, RoutedEventArgs e)
@@ -98,6 +101,23 @@ public partial class MainWindow
         SyncInviteCodePanel.Visibility = Visibility.Visible;
         SyncAuthSubmitButton.Content = "注册并自动组网";
         SyncAccountFeedback.Visibility = Visibility.Collapsed;
+        UpdateAccountModeIndicator(animate: IsLoaded);
+    }
+
+    private void AccountModeTrackGridSizeChanged(object sender, SizeChangedEventArgs e) =>
+        UpdateAccountModeIndicator(animate: false);
+
+    private void UpdateAccountModeIndicator(bool animate)
+    {
+        if (AccountModeTrackGrid is null || AccountModeIndicatorTransform is null)
+            return;
+
+        var segmentWidth = AccountModeTrackGrid.ActualWidth / 2.0;
+        if (segmentWidth <= 0)
+            return;
+
+        var targetX = isRegisterMode ? segmentWidth : 0.0;
+        MotionBehaviors.AnimateHorizontalIndicator(AccountModeIndicatorTransform, targetX, animate);
     }
 
     private void SyncAuthFieldChanged(object sender, TextChangedEventArgs e) => UpdateSyncAuthPlaceholders();
@@ -557,6 +577,7 @@ public partial class MainWindow
                 : $"虚拟 IP {acc.AssignedVirtualIpv4}";
             RailAccountDot.SetResourceReference(Shape.FillProperty, "Ready");
             RailAccountDot.Opacity = 1.0;
+            MotionBehaviors.SetEnablePulse(RailAccountDot, true);
 
             ManualEasyTierExpander.IsExpanded = false;
         }
@@ -565,6 +586,7 @@ public partial class MainWindow
             SetHostBadge(AccountStatusBadge, AccountStatusBadgeText, "未登录", "SurfaceSubtle", "Muted");
             RailAccountTitle.Text = "登录同步账号";
             RailAccountSubtitle.Text = "免配置自动组网";
+            MotionBehaviors.SetEnablePulse(RailAccountDot, false);
             RailAccountDot.SetResourceReference(Shape.FillProperty, "Muted");
             RailAccountDot.Opacity = 0.5;
         }

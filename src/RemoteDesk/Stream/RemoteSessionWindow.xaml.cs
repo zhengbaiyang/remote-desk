@@ -126,6 +126,7 @@ public partial class RemoteSessionWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        RemoteDesk.UI.WindowBackdropHelper.ApplyDarkChromeOnly(this, dark: true);
         if (_hwndSource is null && PresentationSource.FromVisual(this) is HwndSource src)
         {
             _hwndSource = src;
@@ -758,10 +759,29 @@ public partial class RemoteSessionWindow : Window
         var isGame = mode == ControlInputMode.GameRelativeLock;
         OfficeModeBtn.Tag = isGame ? null : "Selected";
         GameModeBtn.Tag = isGame ? "Selected" : null;
+        UpdateSessionModeIndicator(isGame, animate: IsLoaded);
         _overlay?.SetInputMode(mode);
 
         if (!string.IsNullOrWhiteSpace(toastReason))
             _overlay?.ShowToast(toastReason);
+    }
+
+    private void SessionModeTrackGridSizeChanged(object sender, SizeChangedEventArgs e) =>
+        UpdateSessionModeIndicator(VideoHost.InputMode == ControlInputMode.GameRelativeLock, animate: false);
+
+    private void UpdateSessionModeIndicator(bool isGame, bool animate)
+    {
+        if (SessionModeTrackGrid is null || SessionModeIndicatorTransform is null)
+            return;
+
+        var width = SessionModeTrackGrid.ActualWidth / 2.0;
+        if (width <= 0)
+            return;
+
+        RemoteDesk.UI.MotionBehaviors.AnimateHorizontalIndicator(
+            SessionModeIndicatorTransform,
+            isGame ? width : 0.0,
+            animate);
     }
 
     private void ToggleFullscreen()

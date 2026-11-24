@@ -10,6 +10,7 @@ using System.Windows.Controls;
 using System.Windows.Shapes;
 using Microsoft.Win32;
 using RemoteDesk.Streaming;
+using RemoteDesk.UI;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
@@ -257,6 +258,7 @@ public partial class MainWindow
         RailEngineCount.Text = $"{readyCount}/3";
         TitleStatusText.Text = $"核心就绪 {readyCount}/3";
         TitleStatusDot.SetResourceReference(Shape.FillProperty, readyCount == 3 ? "Ready" : (readyCount > 0 ? "Accent" : "Warning"));
+        MotionBehaviors.SetEnablePulse(TitleStatusDot, readyCount == 3);
 
         RailNativeCoreDot.SetResourceReference(Shape.FillProperty, coreReady ? "Ready" : "Danger");
         RailSunshineDot.SetResourceReference(Shape.FillProperty, ssReady ? "Ready" : "Warning");

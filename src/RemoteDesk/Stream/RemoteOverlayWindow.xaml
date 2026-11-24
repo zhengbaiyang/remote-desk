@@ -1,6 +1,7 @@
 <Window x:Class="RemoteDesk.Streaming.RemoteOverlayWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:RemoteDesk.UI"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -10,27 +11,30 @@
         DragOver="OverlayDragOver"
         Drop="OverlayDrop"
         ResizeMode="NoResize"
-        Focusable="False">
+        Focusable="False"
+        FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI">
     <Window.Resources>
-        <SolidColorBrush x:Key="GlassBg" Color="#E6111827" />
-        <SolidColorBrush x:Key="PillBg" Color="#CC0F172A" />
-        <SolidColorBrush x:Key="HairlineBrush" Color="#33FFFFFF" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#3B82F6" />
-        <SolidColorBrush x:Key="ReadyBrush" Color="#22C55E" />
-        <SolidColorBrush x:Key="WarningBrush" Color="#F59E0B" />
-        <SolidColorBrush x:Key="DangerBrush" Color="#EF4444" />
-        <SolidColorBrush x:Key="TextPrimary" Color="#F8FAFC" />
-        <SolidColorBrush x:Key="TextMuted" Color="#94A3B8" />
+        <!-- macOS Dynamic Capsule Floating Overlay Palette -->
+        <SolidColorBrush x:Key="GlassBg" Color="#EB1C1C1E" />
+        <SolidColorBrush x:Key="PillBg" Color="#E01C1C1E" />
+        <SolidColorBrush x:Key="HairlineBrush" Color="#26FFFFFF" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#0A84FF" />
+        <SolidColorBrush x:Key="ReadyBrush" Color="#30D158" />
+        <SolidColorBrush x:Key="WarningBrush" Color="#FF9F0A" />
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF453A" />
+        <SolidColorBrush x:Key="TextPrimary" Color="#F5F5F7" />
+        <SolidColorBrush x:Key="TextMuted" Color="#98989D" />
 
         <Style x:Key="OverlayBtn" TargetType="Button">
-            <Setter Property="Background" Value="#1FFFFFFF" />
+            <Setter Property="Background" Value="#18FFFFFF" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-            <Setter Property="BorderBrush" Value="#24FFFFFF" />
+            <Setter Property="BorderBrush" Value="#18FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="10,5" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="Medium" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ui:MotionBehaviors.EnablePressScale" Value="True" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -38,25 +42,62 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6"
+                                CornerRadius="8"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#33FFFFFF" />
+                                <Setter TargetName="Bd" Property="Background" Value="#2CFFFFFF" />
                             </Trigger>
                             <Trigger Property="Tag" Value="Selected">
                                 <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
                             </Trigger>
                             <Trigger Property="Tag" Value="MutedActive">
-                                <Setter TargetName="Bd" Property="Background" Value="#44F59E0B" />
+                                <Setter TargetName="Bd" Property="Background" Value="#33FF9F0A" />
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource WarningBrush}" />
                             </Trigger>
                             <Trigger Property="Tag" Value="Danger">
-                                <Setter TargetName="Bd" Property="Background" Value="#44EF4444" />
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="#88EF4444" />
+                                <Setter TargetName="Bd" Property="Background" Value="#30FF453A" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#66FF453A" />
+                                <Setter Property="Foreground" Value="#FF6961" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OverlayModeSegBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ui:MotionBehaviors.EnablePressScale" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="7" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#14FFFFFF" />
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Selected">
+                                <Setter TargetName="Bd" Property="Background" Value="Transparent" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -66,30 +107,42 @@
     </Window.Resources>
 
     <Grid>
-        <!-- Fullscreen Auto-Hide Top Handle + Expanded Floating Toolbar -->
+        <!-- Fullscreen Auto-Hide macOS Dynamic Capsule Handle + Expanded Floating Toolbar -->
         <Grid x:Name="FullscreenBarRoot"
               Visibility="Collapsed"
               VerticalAlignment="Top"
               HorizontalAlignment="Stretch">
-            <!-- Thin translucent pull-tab at screen top edge -->
+            <!-- Floating top Dynamic-Capsule pill -->
             <Border x:Name="FullscreenPullTab"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
+                    Margin="0,8,0,0"
                     Background="{StaticResource PillBg}"
                     BorderBrush="{StaticResource HairlineBrush}"
-                    BorderThickness="1,0,1,1"
-                    CornerRadius="0,0,10,10"
-                    Padding="14,4"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Padding="14,5"
                     Cursor="Hand"
+                    RenderTransformOrigin="0.5,0"
                     MouseEnter="PullTabMouseEnter">
+                <Border.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="PullTabScale" ScaleX="1" ScaleY="1" />
+                        <TranslateTransform x:Name="PullTabSlide" Y="0" />
+                    </TransformGroup>
+                </Border.RenderTransform>
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.32" />
+                </Border.Effect>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="PullTabDot" Width="7" Height="7" Fill="{StaticResource ReadyBrush}" Margin="0,0,7,0" />
-                    <Border Width="28" Height="3" CornerRadius="1.5" Background="#88CBD5E1" Margin="0,0,8,0" />
+                    <Ellipse x:Name="PullTabDot" Width="7" Height="7" Fill="{StaticResource ReadyBrush}" Margin="0,0,7,0"
+                             ui:MotionBehaviors.EnablePulse="True" />
+                    <Border Width="24" Height="3" CornerRadius="1.5" Background="#88D1D1D6" Margin="0,0,8,0" />
                     <TextBlock x:Name="PullTabHintText" Text="展开控制栏" Foreground="{StaticResource TextMuted}" FontSize="11" />
                 </StackPanel>
             </Border>
 
-            <!-- Expanded fullscreen floating control toolbar -->
+            <!-- Expanded fullscreen floating control capsule -->
             <Border x:Name="FullscreenExpandedBar"
                     Visibility="Collapsed"
                     HorizontalAlignment="Center"
@@ -98,12 +151,23 @@
                     Background="{StaticResource GlassBg}"
                     BorderBrush="{StaticResource HairlineBrush}"
                     BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="12,7"
+                    CornerRadius="16"
+                    Padding="12,6"
+                    RenderTransformOrigin="0.5,0"
                     MouseEnter="ExpandedBarMouseEnter"
                     MouseLeave="ExpandedBarMouseLeave">
+                <Border.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="ExpandedBarScale" ScaleX="1" ScaleY="1" />
+                        <TranslateTransform x:Name="ExpandedBarSlide" Y="0" />
+                    </TransformGroup>
+                </Border.RenderTransform>
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="18" ShadowDepth="4" Opacity="0.38" />
+                </Border.Effect>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="FsStatusDot" Width="8" Height="8" Fill="{StaticResource ReadyBrush}" Margin="0,0,8,0" />
+                    <Ellipse x:Name="FsStatusDot" Width="7" Height="7" Fill="{StaticResource ReadyBrush}" Margin="0,0,8,0"
+                             ui:MotionBehaviors.EnablePulse="True" />
                     <TextBlock x:Name="FsDeviceNameText"
                                Text="远程主机"
                                Foreground="{StaticResource TextPrimary}"
@@ -112,61 +176,73 @@
                                VerticalAlignment="Center"
                                Margin="0,0,10,0" />
 
-                    <Border Background="#18FFFFFF" CornerRadius="7" Padding="2" Margin="0,0,8,0">
-                        <StackPanel Orientation="Horizontal">
+                    <Border Background="#18FFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1"
+                            CornerRadius="9" Padding="2" Margin="0,0,8,0">
+                        <Grid x:Name="FsModeTrackGrid" SizeChanged="FsModeTrackGridSizeChanged">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="FsModeIndicator" Grid.Column="0" CornerRadius="7"
+                                    Background="{StaticResource AccentBrush}" IsHitTestVisible="False">
+                                <Border.RenderTransform>
+                                    <TranslateTransform x:Name="FsModeIndicatorTransform" X="0" />
+                                </Border.RenderTransform>
+                            </Border>
                             <Button x:Name="FsOfficeModeBtn"
+                                    Grid.Column="0"
                                     Content="办公自由"
-                                    Style="{StaticResource OverlayBtn}"
+                                    Style="{StaticResource OverlayModeSegBtn}"
                                     Tag="Selected"
-                                    Margin="0,0,2,0"
                                     Click="OfficeModeClicked" />
                             <Button x:Name="FsGameModeBtn"
+                                    Grid.Column="1"
                                     Content="游戏锁定"
-                                    Style="{StaticResource OverlayBtn}"
+                                    Style="{StaticResource OverlayModeSegBtn}"
                                     Click="GameModeClicked" />
-                        </StackPanel>
+                        </Grid>
                     </Border>
 
                     <Button x:Name="FsQualityBtn"
                             Content="画质/帧率"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="QualityClicked" />
                     <Button x:Name="FsFilesBtn"
                             Content="传文件"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="FileUploadClicked" />
                     <Button x:Name="FsClipboardBtn"
                             Content="剪贴板"
                             Style="{StaticResource OverlayBtn}"
                             Tag="Selected"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="ClipboardSyncClicked" />
                     <Button x:Name="FsPrivacyBtn"
                             Content="防窥"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="PrivacyClicked" />
                     <Button x:Name="FsHotkeysBtn"
                             Content="热键/电源"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="HotkeysClicked" />
                     <Button x:Name="FsMuteBtn"
                             Content="声音"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="MuteClicked" />
                     <Button x:Name="FsHudBtn"
                             Content="仪表盘"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="ToggleHudClicked" />
                     <Button x:Name="FsExitFullscreenBtn"
                             Content="退出全屏"
                             Style="{StaticResource OverlayBtn}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,5,0"
                             Click="ExitFullscreenClicked" />
                     <Button x:Name="FsDisconnectBtn"
                             Content="断开"
@@ -187,8 +263,11 @@
                 Background="{StaticResource PillBg}"
                 BorderBrush="{StaticResource HairlineBrush}"
                 BorderThickness="1"
-                CornerRadius="10"
-                Padding="12,8">
+                CornerRadius="12"
+                Padding="13,9">
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="14" ShadowDepth="2" Opacity="0.3" />
+            </Border.Effect>
             <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
                     <TextBlock x:Name="HudLinkText" Text="P2P 直连" Foreground="{StaticResource ReadyBrush}" FontSize="11.5" FontWeight="SemiBold" />
@@ -202,7 +281,7 @@
             </StackPanel>
         </Border>
 
-        <!-- Center Status / Error Card (above HwndHost cleanly via separate owned transparent window) -->
+        <!-- Center Status / Error Card -->
         <Border x:Name="StatusCard"
                 Visibility="Collapsed"
                 HorizontalAlignment="Center"
@@ -211,8 +290,11 @@
                 Background="{StaticResource GlassBg}"
                 BorderBrush="{StaticResource HairlineBrush}"
                 BorderThickness="1"
-                CornerRadius="14"
-                Padding="24,20">
+                CornerRadius="16"
+                Padding="26,22">
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="22" ShadowDepth="6" Opacity="0.4" />
+            </Border.Effect>
             <StackPanel HorizontalAlignment="Center">
                 <TextBlock x:Name="StatusTitleText"
                            Text="正在建立低延迟远控通道…"
@@ -248,7 +330,7 @@
             </StackPanel>
         </Border>
 
-        <!-- Bottom-Center Click-Through Toast Banner -->
+        <!-- Bottom-Center Click-Through Toast Capsule -->
         <Border x:Name="ToastBanner"
                 Visibility="Collapsed"
                 IsHitTestVisible="False"
@@ -258,8 +340,14 @@
                 Background="{StaticResource GlassBg}"
                 BorderBrush="{StaticResource HairlineBrush}"
                 BorderThickness="1"
-                CornerRadius="999"
+                CornerRadius="15"
                 Padding="16,7">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="ToastSlide" Y="0" />
+            </Border.RenderTransform>
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="14" ShadowDepth="3" Opacity="0.34" />
+            </Border.Effect>
             <TextBlock x:Name="ToastText"
                        Foreground="{StaticResource TextPrimary}"
                        FontSize="12.5"

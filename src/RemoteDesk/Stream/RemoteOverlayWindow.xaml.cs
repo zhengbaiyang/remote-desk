@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using RemoteDesk.UI;
 
 namespace RemoteDesk.Streaming;
 
@@ -11,6 +13,9 @@ public partial class RemoteOverlayWindow : Window
     private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromMilliseconds(2600) };
     private bool _isFullscreen;
     private bool _isExternalPopupOpen;
+    private bool _isGameMode;
+    private int _barAnimGen;
+    private int _toastAnimGen;
 
     public RemoteOverlayWindow()
     {
@@ -26,7 +31,7 @@ public partial class RemoteOverlayWindow : Window
         _toastTimer.Tick += (_, _) =>
         {
             _toastTimer.Stop();
-            ToastBanner.Visibility = Visibility.Collapsed;
+            HideToastAnimated();
         };
     }
 
@@ -67,7 +72,7 @@ public partial class RemoteOverlayWindow : Window
         _isFullscreen = isFullscreen;
         _barAutoHideTimer.Stop();
         FullscreenBarRoot.Visibility = isFullscreen ? Visibility.Visible : Visibility.Collapsed;
-        CollapseFullscreenBar();
+        CollapseFullscreenBar(immediate: true);
     }
 
     public void SetTelemetryHudVisible(bool visible)
@@ -78,9 +83,25 @@ public partial class RemoteOverlayWindow : Window
 
     internal void SetInputMode(ControlInputMode mode)
     {
-        var isGame = mode == ControlInputMode.GameRelativeLock;
-        FsOfficeModeBtn.Tag = isGame ? null : "Selected";
-        FsGameModeBtn.Tag = isGame ? "Selected" : null;
+        _isGameMode = mode == ControlInputMode.GameRelativeLock;
+        FsOfficeModeBtn.Tag = _isGameMode ? null : "Selected";
+        FsGameModeBtn.Tag = _isGameMode ? "Selected" : null;
+        UpdateFsModeIndicator(animate: IsLoaded && FullscreenExpandedBar.Visibility == Visibility.Visible);
+    }
+
+    private void FsModeTrackGridSizeChanged(object sender, SizeChangedEventArgs e) =>
+        UpdateFsModeIndicator(animate: false);
+
+    private void UpdateFsModeIndicator(bool animate)
+    {
+        if (FsModeTrackGrid is null || FsModeIndicatorTransform is null)
+            return;
+
+        var width = FsModeTrackGrid.ActualWidth / 2.0;
+        if (width <= 0)
+            return;
+
+        MotionBehaviors.AnimateHorizontalIndicator(FsModeIndicatorTransform, _isGameMode ? width : 0.0, animate);
     }
 
     public void SetMuted(bool muted)
@@ -170,23 +191,106 @@ public partial class RemoteOverlayWindow : Window
         if (string.IsNullOrWhiteSpace(message))
             return;
 
+        var gen = ++_toastAnimGen;
         ToastText.Text = message;
+        ToastBanner.BeginAnimation(OpacityProperty, null);
+        ToastSlide.BeginAnimation(TranslateTransform.YProperty, null);
+        ToastBanner.Opacity = 0;
+        ToastSlide.Y = 8;
         ToastBanner.Visibility = Visibility.Visible;
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        ToastBanner.BeginAnimation(OpacityProperty, new DoubleAnimation(1.0, TimeSpan.FromMilliseconds(160)) { EasingFunction = ease });
+        ToastSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0.0, TimeSpan.FromMilliseconds(160)) { EasingFunction = ease });
+
         _toastTimer.Stop();
         _toastTimer.Start();
+        _ = gen;
+    }
+
+    private void HideToastAnimated()
+    {
+        var gen = ++_toastAnimGen;
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var fade = new DoubleAnimation(0.0, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease };
+        fade.Completed += (_, _) =>
+        {
+            if (gen == _toastAnimGen)
+                ToastBanner.Visibility = Visibility.Collapsed;
+        };
+        ToastBanner.BeginAnimation(OpacityProperty, fade);
+        ToastSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(6.0, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
     }
 
     private void ExpandFullscreenBar()
     {
         _barAutoHideTimer.Stop();
+        var gen = ++_barAnimGen;
+
+        FullscreenPullTab.BeginAnimation(OpacityProperty, null);
         FullscreenPullTab.Visibility = Visibility.Collapsed;
+
+        FullscreenExpandedBar.BeginAnimation(OpacityProperty, null);
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        ExpandedBarSlide.BeginAnimation(TranslateTransform.YProperty, null);
+
+        FullscreenExpandedBar.Opacity = 0;
+        ExpandedBarScale.ScaleX = 0.94;
+        ExpandedBarScale.ScaleY = 0.94;
+        ExpandedBarSlide.Y = -6;
         FullscreenExpandedBar.Visibility = Visibility.Visible;
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var dur = TimeSpan.FromMilliseconds(190);
+        FullscreenExpandedBar.BeginAnimation(OpacityProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+        ExpandedBarSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0.0, dur) { EasingFunction = ease });
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (gen == _barAnimGen)
+                UpdateFsModeIndicator(animate: false);
+        }, DispatcherPriority.Loaded);
     }
 
-    private void CollapseFullscreenBar()
+    private void CollapseFullscreenBar(bool immediate = false)
     {
-        FullscreenExpandedBar.Visibility = Visibility.Collapsed;
-        FullscreenPullTab.Visibility = _isFullscreen ? Visibility.Visible : Visibility.Collapsed;
+        var gen = ++_barAnimGen;
+        if (immediate || FullscreenExpandedBar.Visibility != Visibility.Visible)
+        {
+            FullscreenExpandedBar.BeginAnimation(OpacityProperty, null);
+            FullscreenExpandedBar.Visibility = Visibility.Collapsed;
+            FullscreenPullTab.BeginAnimation(OpacityProperty, null);
+            FullscreenPullTab.Opacity = 1.0;
+            FullscreenPullTab.Visibility = _isFullscreen ? Visibility.Visible : Visibility.Collapsed;
+            return;
+        }
+
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var dur = TimeSpan.FromMilliseconds(140);
+        var fadeOut = new DoubleAnimation(0.0, dur) { EasingFunction = ease };
+        fadeOut.Completed += (_, _) =>
+        {
+            if (gen != _barAnimGen)
+                return;
+
+            FullscreenExpandedBar.Visibility = Visibility.Collapsed;
+            if (_isFullscreen)
+            {
+                FullscreenPullTab.Opacity = 0.0;
+                PullTabSlide.Y = -4;
+                FullscreenPullTab.Visibility = Visibility.Visible;
+                FullscreenPullTab.BeginAnimation(OpacityProperty, new DoubleAnimation(1.0, dur) { EasingFunction = ease });
+                PullTabSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0.0, dur) { EasingFunction = ease });
+            }
+        };
+
+        FullscreenExpandedBar.BeginAnimation(OpacityProperty, fadeOut);
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.96, dur) { EasingFunction = ease });
+        ExpandedBarScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.96, dur) { EasingFunction = ease });
+        ExpandedBarSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(-6.0, dur) { EasingFunction = ease });
     }
 
     private void PullTabMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)

@@ -23,7 +23,7 @@ internal sealed record AppSettings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? UpdateRepository { get; init; }
 
-    public bool UseDarkTheme { get; init; } = true;
+    public bool UseDarkTheme { get; init; } = false;
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool HostModeEnabled { get; init; }
@@ -75,7 +75,7 @@ internal sealed class SettingsStore(string path)
         public EasyTierConfig? EasyTier { get; init; }
         public string? DownloadMirrorPrefix { get; init; }
         public string? UpdateRepository { get; init; }
-        public bool UseDarkTheme { get; init; } = true;
+        public bool UseDarkTheme { get; init; } = false;
         public bool HostModeEnabled { get; init; }
         public StreamOptions? DefaultStream { get; init; }
         public AccountSettings? Account { get; init; }

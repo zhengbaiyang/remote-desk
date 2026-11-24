@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Shapes;
+using RemoteDesk.UI;
 
 namespace RemoteDesk;
 
@@ -204,14 +205,17 @@ public partial class MainWindow
         {
             HostNavDot.SetResourceReference(Shape.FillProperty, "Ready");
             HostNavDot.Opacity = 1.0;
+            MotionBehaviors.SetEnablePulse(HostNavDot, true);
         }
         else if (settings.HostModeEnabled)
         {
+            MotionBehaviors.SetEnablePulse(HostNavDot, false);
             HostNavDot.SetResourceReference(Shape.FillProperty, "Accent");
             HostNavDot.Opacity = 0.9;
         }
         else
         {
+            MotionBehaviors.SetEnablePulse(HostNavDot, false);
             HostNavDot.SetResourceReference(Shape.FillProperty, "Muted");
             HostNavDot.Opacity = 0.4;
         }

@@ -2,14 +2,14 @@
   <img src="src/RemoteDesk/Assets/remotedesk.png" alt="RemoteDesk 项目标志" width="84" height="84">
 </p>
 
-<h1 align="center">RemoteDesk 2.0</h1>
+<h1 align="center">RemoteDesk 2.1</h1>
 
 <p align="center">
   <strong>面向 Windows 的一体化零配置高刷远程桌面平台</strong>
 </p>
 
 <p align="center">
-  内置自研原生硬解控屏内核、UU 远程风格悬浮操控栏、阿里云邀请码账号云同步与 EasyTier P2P 跨网组网，告别外部 Moonlight / RustDesk 启动器割裂感，开机登录即连。
+  内置自研原生硬解控屏内核、Oink × macOS 柔和扁平桌面与微动效、全屏灵动胶囊操控栏、阿里云邀请码账号云同步与 EasyTier P2P 跨网组网，开机登录即连。
 </p>
 
 <p align="center">
@@ -34,13 +34,13 @@
   <a href="#从源码构建">从源码构建</a>
 </p>
 
-![RemoteDesk 2.0 主界面（暗色模式）](docs/images/desktop.png)
+![RemoteDesk 2.1 主界面（Oink × macOS 柔和浅色模式）](docs/images/desktop.png)
 
 ---
 
-## 为什么选择 RemoteDesk 2.0？
+## 为什么选择 RemoteDesk 2.1？
 
-| 对比维度 | 传统方案（手动 Moonlight + RustDesk） | RemoteDesk 2.0 一体化平台 |
+| 对比维度 | 传统方案（手动 Moonlight + RustDesk） | RemoteDesk 2.1 一体化平台 |
 | --- | --- | --- |
 | **控屏体验** | 仅作为外部启动器，另弹窗打开第三方软件 | **内置原生 `RemoteDesk.StreamCore.dll`**，连接、D3D11 硬解与键鼠音视频全在主程序内完成 |
 | **操作模式** | Moonlight 默认全屏锁鼠，日常办公易迷失焦点 | **UU 远程风格 UI**：窗口/全屏随时切，顶部悬浮工具栏与「办公自由 / 游戏锁鼠」双模式 |
@@ -52,6 +52,9 @@
 - **内置原生高刷串流内核（`RemoteDesk.StreamCore.dll`）**
   - 基于 `moonlight-common-c` + Windows CNG（`bcrypt`）+ Media Foundation D3D11VA 零拷贝硬解（H.264 / HEVC / AV1）与 Opus / WASAPI 低延迟音频渲染。
   - 支持 1080p120、2K60、省流及自定义分辨率/帧率/码率（5–150 Mbps），会话内调节画质后自动平滑重连。
+- **Oink × macOS 柔和桌面与原生微动效（v2.1 新增）**
+  - 采用静谧扁平的 **柔和浅色** 默认外观与 **macOS 石墨深色** 一键切换，在 Windows 11 上支持通透 **Mica 侧栏**与原生圆角扩展。
+  - 纯原生 WPF 微动效套件：侧栏与分段控件平滑滑动胶囊、卡片光标聚光描边、按钮按压回弹、在线状态点呼吸微光、页面淡入滑移，以及全屏 **Dynamic Capsule 灵动胶囊** 悬浮控制条。
 - **UU 远程风格悬浮操控体验**
   - 默认以独立可缩放窗口（`1280×760`）打开，随时按 `F11` 或点击图标切换无边框全屏；全屏顶部悬浮控制条支持鼠标悬停呼出、移开自动收起。
   - **办公自由指针**（默认不锁鼠、高精度绝对坐标映射）与 **游戏相对锁定**（`WM_INPUT` 原始鼠标与系统键透传，`Ctrl+Alt` 随时释放）一键切换。
@@ -76,8 +79,8 @@
       <sub><strong>账号云同步与 EasyTier P2P 跨网节点（浅色模式）</strong><br />登录后自动分配隔离虚拟子网与固定 IP，直连 / 中继延迟一目了然</sub>
     </td>
     <td width="50%" align="center">
-      <img src="docs/images/host.png" alt="本机被控、守护服务与防窥协同中心（暗色主题）" /><br />
-      <sub><strong>本机被控中心与守护协同通道（暗色模式）</strong><br />系统级守护服务状态、Sunshine 高刷托管、独立安全密码与硬件编码器识别</sub>
+      <img src="docs/images/host.png" alt="本机被控、守护服务与防窥协同中心（macOS 石墨深色模式）" /><br />
+      <sub><strong>本机被控中心与守护协同通道（macOS 石墨深色模式）</strong><br />系统级守护服务状态、Sunshine 高刷托管、独立安全密码与硬件编码器识别</sub>
     </td>
   </tr>
 </table>
@@ -172,7 +175,7 @@ dotnet run --project tests/RemoteDesk.Checks/RemoteDesk.Checks.csproj -c Release
 # 运行同步服务端单元测试（需要 Python 3.12+）
 python -m unittest discover -s server/sync -p "test_*.py" -v
 
-# 生成 Windows x64 安装包与 Velopack 更新文件（输出至 artifacts/releases/2.0.0）
+# 生成 Windows x64 安装包与 Velopack 更新文件（输出至 artifacts/releases/2.1.0）
 .\packaging\build.ps1
 ```
 

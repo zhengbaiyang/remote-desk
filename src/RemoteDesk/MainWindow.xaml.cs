@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Shapes;
 using RemoteDesk.Streaming;
+using RemoteDesk.UI;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
@@ -139,6 +140,7 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
+            MotionBehaviors.AnimateVerticalIndicator(NavIndicatorTransform, (int)currentPage * 42.0, animate: false);
             FocusDeviceAction();
             await OnMainWindowLoadedAsync();
         };
@@ -237,8 +239,15 @@ public partial class MainWindow : Window
         RefreshAllEngines();
     }
 
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        WindowBackdropHelper.ApplyMainWindowBackdrop(this, settings.UseDarkTheme, SidebarBorder);
+    }
+
     private void NavigateTo(AppPage page)
     {
+        var changed = page != currentPage;
         currentPage = page;
         RemoteControlPage.Visibility = page == AppPage.Remote ? Visibility.Visible : Visibility.Collapsed;
         LocalHostPage.Visibility = page == AppPage.Host ? Visibility.Visible : Visibility.Collapsed;
@@ -249,6 +258,20 @@ public partial class MainWindow : Window
         HostNav.Tag = page == AppPage.Host ? "Selected" : null;
         NetworkNav.Tag = page == AppPage.Network ? "Selected" : null;
         EnginesNav.Tag = page == AppPage.Engines ? "Selected" : null;
+
+        MotionBehaviors.AnimateVerticalIndicator(NavIndicatorTransform, (int)page * 42.0, animate: IsLoaded && changed);
+        if (IsLoaded && changed)
+        {
+            FrameworkElement targetPage = page switch
+            {
+                AppPage.Remote => RemoteControlPage,
+                AppPage.Host => LocalHostPage,
+                AppPage.Network => NetworkNodesPage,
+                AppPage.Engines => EnginesSettingsPage,
+                _ => RemoteControlPage,
+            };
+            MotionBehaviors.AnimatePageEnter(targetPage);
+        }
 
         ShowStatus("");
     }
@@ -916,5 +939,7 @@ public partial class MainWindow : Window
         {
             isSyncingThemeToggle = false;
         }
+
+        WindowBackdropHelper.ApplyMainWindowBackdrop(this, dark, SidebarBorder);
     }
 }

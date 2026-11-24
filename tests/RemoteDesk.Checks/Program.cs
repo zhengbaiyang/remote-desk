@@ -31,7 +31,7 @@ try
             var store = new SettingsStore(path);
             var initial = store.Load();
             Equal(0, initial.Devices.Count);
-            Equal(true, initial.UseDarkTheme);
+            Equal(false, initial.UseDarkTheme);
             Equal(true, initial.AutoMatchResolution);
             Equal(true, initial.AutoSyncClipboard);
 
@@ -56,7 +56,7 @@ try
             Equal(false, loaded.AutoSyncClipboard);
             Equal(true, loaded.UseDarkTheme);
 
-            // Explicit light theme (false) must persist and reload as false (not revert to default true).
+            // Explicit light theme (false) and dark theme (true) must both persist across reloads.
             store.Save(loaded with { Devices = [], UseDarkTheme = false });
             using var lightJson = JsonDocument.Parse(File.ReadAllText(path));
             Equal(true, lightJson.RootElement.TryGetProperty("useDarkTheme", out var darkProp));

@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:stream="clr-namespace:RemoteDesk.Streaming"
+        xmlns:ui="clr-namespace:RemoteDesk.UI"
         Title="RemoteDesk 高刷远控"
         Width="1280"
         Height="760"
@@ -11,31 +12,38 @@
         DragOver="WindowDragOver"
         Drop="WindowDrop"
         WindowStartupLocation="CenterScreen"
-        Background="#090D16"
-        Foreground="#F8FAFC"
+        Background="#0A0A0C"
+        Foreground="#F5F5F7"
+        FontFamily="Segoe UI Variable, Microsoft YaHei UI, Segoe UI"
         Icon="pack://application:,,,/Assets/remotedesk.ico">
     <Window.Resources>
-        <SolidColorBrush x:Key="ToolbarBg" Color="#111827" />
-        <SolidColorBrush x:Key="PopupBg" Color="#172033" />
-        <SolidColorBrush x:Key="BorderSubtle" Color="#26334D" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#3B82F6" />
-        <SolidColorBrush x:Key="AccentSoftBrush" Color="#243B82F6" />
-        <SolidColorBrush x:Key="ReadyBrush" Color="#22C55E" />
-        <SolidColorBrush x:Key="WarningBrush" Color="#F59E0B" />
-        <SolidColorBrush x:Key="DangerBrush" Color="#EF4444" />
-        <SolidColorBrush x:Key="TextPrimary" Color="#F8FAFC" />
-        <SolidColorBrush x:Key="TextMuted" Color="#94A3B8" />
+        <!-- macOS Graphite Dark Session Palette -->
+        <SolidColorBrush x:Key="ToolbarBg" Color="#1C1C1E" />
+        <SolidColorBrush x:Key="PopupBg" Color="#242426" />
+        <SolidColorBrush x:Key="BorderSubtle" Color="#1FFFFFFF" />
+        <SolidColorBrush x:Key="ControlBg" Color="#2C2C2E" />
+        <SolidColorBrush x:Key="ControlHover" Color="#363639" />
+        <SolidColorBrush x:Key="TrackBg" Color="#2C2C2E" />
+        <SolidColorBrush x:Key="ThumbBg" Color="#0A84FF" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#0A84FF" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#240A84FF" />
+        <SolidColorBrush x:Key="ReadyBrush" Color="#30D158" />
+        <SolidColorBrush x:Key="WarningBrush" Color="#FF9F0A" />
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF453A" />
+        <SolidColorBrush x:Key="TextPrimary" Color="#F5F5F7" />
+        <SolidColorBrush x:Key="TextMuted" Color="#98989D" />
 
         <Style x:Key="BarBtn" TargetType="Button">
-            <Setter Property="Background" Value="#1E293B" />
+            <Setter Property="Background" Value="{StaticResource ControlBg}" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-            <Setter Property="BorderBrush" Value="#334155" />
+            <Setter Property="BorderBrush" Value="#18FFFFFF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Padding" Value="10,5" />
             <Setter Property="FontSize" Value="11.5" />
             <Setter Property="FontWeight" Value="Medium" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
+            <Setter Property="ui:MotionBehaviors.EnablePressScale" Value="True" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -43,26 +51,64 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6"
+                                CornerRadius="8"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#334155" />
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource ControlHover}" />
                             </Trigger>
                             <Trigger Property="Tag" Value="Selected">
                                 <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
                             </Trigger>
                             <Trigger Property="Tag" Value="MutedActive">
-                                <Setter TargetName="Bd" Property="Background" Value="#33F59E0B" />
+                                <Setter TargetName="Bd" Property="Background" Value="#2CFF9F0A" />
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource WarningBrush}" />
                             </Trigger>
                             <Trigger Property="Tag" Value="Danger">
-                                <Setter TargetName="Bd" Property="Background" Value="#2AEF4444" />
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="#66EF4444" />
-                                <Setter Property="Foreground" Value="#FCA5A5" />
+                                <Setter TargetName="Bd" Property="Background" Value="#26FF453A" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#55FF453A" />
+                                <Setter Property="Foreground" Value="#FF6961" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Transparent segmented item button over sliding SessionModeIndicator -->
+        <Style x:Key="ModeSegBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="ui:MotionBehaviors.EnablePressScale" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#14FFFFFF" />
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Selected">
+                                <Setter TargetName="Bd" Property="Background" Value="Transparent" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -73,7 +119,122 @@
         <Style x:Key="PopupItemBtn" TargetType="Button" BasedOn="{StaticResource BarBtn}">
             <Setter Property="HorizontalContentAlignment" Value="Left" />
             <Setter Property="Padding" Value="12,8" />
-            <Setter Property="Background" Value="#1E293B" />
+            <Setter Property="Background" Value="{StaticResource ControlBg}" />
+        </Style>
+
+        <Style x:Key="GraphiteCombo" TargetType="ComboBox">
+            <Setter Property="Background" Value="#1C1C1E" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderSubtle}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ComboBoxItem">
+                        <Setter Property="Foreground" Value="#F5F5F7" />
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="Padding" Value="10,6" />
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ComboBoxItem">
+                                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="6"
+                                            Margin="3,1.5" Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter VerticalAlignment="Center" />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsHighlighted" Value="True">
+                                            <Setter TargetName="Bd" Property="Background" Value="#363639" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="Bd" Property="Background" Value="#280A84FF" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid x:Name="Root">
+                            <ToggleButton Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="#1C1C1E" BorderBrush="#24FFFFFF" BorderThickness="1" CornerRadius="8">
+                                            <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                       FontSize="10" Foreground="#98989D" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center" Margin="0,0,10,0" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              TextElement.Foreground="#F5F5F7"
+                                              Margin="10,0,26,0" VerticalAlignment="Center" />
+                            <Popup AllowsTransparency="True" Placement="Bottom" PlacementTarget="{Binding ElementName=Root}"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" Focusable="False" PopupAnimation="Fade" VerticalOffset="4">
+                                <Border MinWidth="{Binding ActualWidth, ElementName=Root}"
+                                        Background="#2C2C2E" BorderBrush="#26FFFFFF" BorderThickness="1" CornerRadius="10" Padding="2,4">
+                                    <ItemsPresenter />
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GraphiteSlider" TargetType="Slider">
+            <Setter Property="MinHeight" Value="22" />
+            <Setter Property="IsMoveToPointEnabled" Value="True" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid VerticalAlignment="Center">
+                            <Border Height="4" CornerRadius="2" Background="#3A3A3D" VerticalAlignment="Center" />
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="4" CornerRadius="2,0,0,2" Background="{StaticResource AccentBrush}" VerticalAlignment="Center" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="4" Background="Transparent" VerticalAlignment="Center" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="14" Height="14" Cursor="Hand">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Width="14" Height="14" CornerRadius="7" Background="#FFFFFF"
+                                                        BorderBrush="#33000000" BorderThickness="1" />
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -83,14 +244,14 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Windowed Mode Unified Sleek Control Bar (hidden in F11 fullscreen) -->
+        <!-- Windowed Mode Unified macOS Graphite Control Bar (hidden in F11 fullscreen) -->
         <Border x:Name="WindowedToolbar"
                 Grid.Row="0"
-                Height="44"
+                Height="46"
                 Background="{StaticResource ToolbarBg}"
                 BorderBrush="{StaticResource BorderSubtle}"
                 BorderThickness="0,0,0,1"
-                Padding="12,0">
+                Padding="14,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -100,10 +261,11 @@
                 <!-- Left: Target Info & Live Telemetry Pill -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse x:Name="ToolbarStatusDot"
-                             Width="8"
-                             Height="8"
+                             Width="7"
+                             Height="7"
                              Fill="{StaticResource WarningBrush}"
-                             Margin="0,0,8,0" />
+                             Margin="0,0,8,0"
+                             ui:MotionBehaviors.EnablePulse="True" />
                     <TextBlock x:Name="ToolbarDeviceName"
                                Text="远程桌面"
                                FontSize="13"
@@ -112,11 +274,9 @@
                                TextTrimming="CharacterEllipsis"
                                MaxWidth="180"
                                VerticalAlignment="Center" />
-                    <Border Background="#1E293B"
-                            BorderBrush="#334155"
-                            BorderThickness="1"
-                            CornerRadius="5"
-                            Padding="7,2"
+                    <Border Background="#2C2C2E"
+                            CornerRadius="9"
+                            Padding="8,2"
                             Margin="8,0,8,0"
                             VerticalAlignment="Center">
                         <TextBlock x:Name="ToolbarLinkBadge"
@@ -138,28 +298,37 @@
 
                 <!-- Right: Mode Toggle, Quality/FPS, Hotkeys, Audio, Fullscreen, Disconnect -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Background="#0B1220"
-                            BorderBrush="#273549"
+                    <Border Background="{StaticResource TrackBg}"
+                            BorderBrush="#16FFFFFF"
                             BorderThickness="1"
-                            CornerRadius="7"
+                            CornerRadius="8"
                             Padding="2"
                             Margin="0,0,8,0">
-                        <StackPanel Orientation="Horizontal">
+                        <Grid x:Name="SessionModeTrackGrid" SizeChanged="SessionModeTrackGridSizeChanged">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="SessionModeIndicator" Grid.Column="0" CornerRadius="6"
+                                    Background="{StaticResource AccentBrush}" IsHitTestVisible="False">
+                                <Border.RenderTransform>
+                                    <TranslateTransform x:Name="SessionModeIndicatorTransform" X="0" />
+                                </Border.RenderTransform>
+                            </Border>
                             <Button x:Name="OfficeModeBtn"
+                                    Grid.Column="0"
                                     Content="办公自由"
-                                    Style="{StaticResource BarBtn}"
+                                    Style="{StaticResource ModeSegBtn}"
                                     Tag="Selected"
-                                    Padding="9,4"
-                                    Margin="0,0,2,0"
                                     ToolTip="默认办公模式：光标自由移动，绝对坐标同步"
                                     Click="OfficeModeClicked" />
                             <Button x:Name="GameModeBtn"
+                                    Grid.Column="1"
                                     Content="游戏锁定"
-                                    Style="{StaticResource BarBtn}"
-                                    Padding="9,4"
+                                    Style="{StaticResource ModeSegBtn}"
                                     ToolTip="游戏相对锁鼠模式（按 Ctrl+Alt 或切窗自动释放）"
                                     Click="GameModeClicked" />
-                        </StackPanel>
+                        </Grid>
                     </Border>
 
                     <Button x:Name="QualityBtn"
@@ -229,14 +398,18 @@
                AllowsTransparency="True"
                Placement="Bottom"
                VerticalOffset="6"
+               PopupAnimation="Fade"
                Opened="MenuPopupOpened"
                Closed="MenuPopupClosed">
             <Border Background="{StaticResource PopupBg}"
                     BorderBrush="{StaticResource BorderSubtle}"
                     BorderThickness="1"
-                    CornerRadius="12"
-                    Width="330"
+                    CornerRadius="14"
+                    Width="340"
                     Padding="16">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="4" Opacity="0.35" />
+                </Border.Effect>
                 <StackPanel>
                     <TextBlock Text="画质与传输设置" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
                     <TextBlock x:Name="CodecCapabilityHint"
@@ -260,7 +433,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0">
                             <TextBlock Text="分辨率" FontSize="11.5" Foreground="{StaticResource TextMuted}" Margin="0,0,0,4" />
-                            <ComboBox x:Name="PopupResolutionCombo">
+                            <ComboBox x:Name="PopupResolutionCombo" Style="{StaticResource GraphiteCombo}">
                                 <ComboBoxItem Content="1280 × 720" Tag="1280x720" />
                                 <ComboBoxItem Content="1920 × 1080" Tag="1920x1080" />
                                 <ComboBoxItem Content="2560 × 1440" Tag="2560x1440" />
@@ -269,7 +442,7 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2">
                             <TextBlock Text="帧率 (FPS)" FontSize="11.5" Foreground="{StaticResource TextMuted}" Margin="0,0,0,4" />
-                            <ComboBox x:Name="PopupFpsCombo">
+                            <ComboBox x:Name="PopupFpsCombo" Style="{StaticResource GraphiteCombo}">
                                 <ComboBoxItem Content="30 FPS" Tag="30" />
                                 <ComboBoxItem Content="60 FPS" Tag="60" />
                                 <ComboBoxItem Content="90 FPS" Tag="90" />
@@ -290,6 +463,7 @@
                                        HorizontalAlignment="Right" />
                         </DockPanel>
                         <Slider x:Name="PopupBitrateSlider"
+                                Style="{StaticResource GraphiteSlider}"
                                 Minimum="4"
                                 Maximum="120"
                                 TickFrequency="1"
@@ -304,7 +478,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0" Margin="0,0,12,0">
                             <TextBlock Text="视频编码" FontSize="11.5" Foreground="{StaticResource TextMuted}" Margin="0,0,0,4" />
-                            <ComboBox x:Name="PopupCodecCombo">
+                            <ComboBox x:Name="PopupCodecCombo" Style="{StaticResource GraphiteCombo}">
                                 <ComboBoxItem Content="自动协商" Tag="Auto" />
                                 <ComboBoxItem Content="HEVC (H.265)" Tag="H265" />
                                 <ComboBoxItem Content="H.264" Tag="H264" />
@@ -316,7 +490,7 @@
                                   Content="D3D11 硬解"
                                   Foreground="{StaticResource TextPrimary}"
                                   VerticalAlignment="Bottom"
-                                  Margin="0,0,0,4"
+                                  Margin="0,0,0,6"
                                   IsChecked="True" />
                     </Grid>
 
@@ -352,20 +526,24 @@
             </Border>
         </Popup>
 
-        <!-- System Hotkeys Popup -->
+        <!-- System Hotkeys & Remote Power Popup -->
         <Popup x:Name="HotkeysPopup"
                StaysOpen="False"
                AllowsTransparency="True"
                Placement="Bottom"
                VerticalOffset="6"
+               PopupAnimation="Fade"
                Opened="MenuPopupOpened"
                Closed="MenuPopupClosed">
             <Border Background="{StaticResource PopupBg}"
                     BorderBrush="{StaticResource BorderSubtle}"
                     BorderThickness="1"
-                    CornerRadius="12"
-                    Width="250"
-                    Padding="12">
+                    CornerRadius="14"
+                    Width="256"
+                    Padding="13">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="4" Opacity="0.35" />
+                </Border.Effect>
                 <StackPanel>
                     <TextBlock Text="发送系统组合键" FontSize="13.5" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" Margin="0,0,0,8" />
                     <Button Content="Ctrl + Alt + Del（安全选项）" Style="{StaticResource PopupItemBtn}" Margin="0,0,0,5" Tag="1" Click="SendHotkeyBtnClicked" />
@@ -375,7 +553,7 @@
                     <Button Content="Ctrl + Shift + Esc（任务管理器）" Style="{StaticResource PopupItemBtn}" Margin="0,0,0,5" Tag="5" Click="SendHotkeyBtnClicked" />
                     <Button Content="Win + L（锁定远程电脑）" Style="{StaticResource PopupItemBtn}" Tag="6" Click="SendHotkeyBtnClicked" />
 
-                    <Border Height="1" Background="{StaticResource BorderSubtle}" Margin="0,9,0,8" />
+                    <Border Height="1" Background="#14FFFFFF" Margin="0,9,0,8" />
                     <TextBlock Text="远程电源与屏幕" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextMuted}" Margin="0,0,0,6" />
                     <Button x:Name="PowerLockBtn" Content="立即锁定屏幕" Style="{StaticResource PopupItemBtn}" Margin="0,0,0,5" Click="PowerLockClicked" />
                     <UniformGrid Columns="2">
