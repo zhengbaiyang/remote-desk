@@ -2,38 +2,84 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Shapes;
+using RemoteDesk.Streaming;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
 
 internal sealed record DeviceListItem(
-    DeviceProfile Profile,
+    DeviceProfile? LocalProfile,
     string Name,
-    string Id,
+    string? HostAddress,
+    StreamOptions Stream,
+    string StreamAppName,
     string TargetSubtitle,
     string ModeBadgeText,
-    bool IsStreamMode)
+    bool IsCloudSynced = false,
+    bool IsOnline = true,
+    SyncedDeviceInfo? SyncedDevice = null)
 {
-    public static DeviceListItem FromProfile(DeviceProfile profile)
+    public string UniqueKey => SyncedDevice is not null
+        ? $"cloud:{SyncedDevice.Id}"
+        : $"local:{Name}:{HostAddress}";
+
+    public bool SupportsStream => !string.IsNullOrWhiteSpace(HostAddress);
+
+    public DeviceProfile ToProfile(string? hostOverride = null)
     {
-        var isStream = profile.PreferredMode == ConnectionMode.Stream;
-        var subtitle = isStream
-            ? (profile.HostAddress ?? (profile.Id is not null ? $"ID {profile.Id}" : "未配置地址"))
-            : (profile.Id is not null ? $"ID {profile.Id}" : (profile.HostAddress ?? "未配置地址"));
+        var effectiveHost = !string.IsNullOrWhiteSpace(hostOverride)
+            ? hostOverride
+            : HostAddress;
+        if (string.IsNullOrWhiteSpace(effectiveHost))
+            throw new ArgumentException("该设备缺少有效主机地址。");
+
+        return LocalProfile is not null && string.Equals(LocalProfile.HostAddress, effectiveHost, StringComparison.OrdinalIgnoreCase)
+            ? LocalProfile
+            : DeviceProfile.Create(Name, effectiveHost, Stream, StreamAppName);
+    }
+
+    public static DeviceListItem FromProfile(DeviceProfile profile) =>
+        new(
+            LocalProfile: profile,
+            Name: profile.Name,
+            HostAddress: profile.HostAddress,
+            Stream: profile.Stream,
+            StreamAppName: profile.StreamAppName,
+            TargetSubtitle: profile.HostAddress,
+            ModeBadgeText: "高刷",
+            IsCloudSynced: false,
+            IsOnline: true,
+            SyncedDevice: null);
+
+    public static DeviceListItem FromSyncedDevice(SyncedDeviceInfo synced, StreamOptions defaultStream)
+    {
+        var preferredHost = !string.IsNullOrWhiteSpace(synced.VirtualIpv4)
+            ? synced.VirtualIpv4
+            : synced.LanIpv4;
+        var statusText = synced.IsOnline ? "在线" : "离线";
+        var pinTag = synced.SecurityPinRequired ? " · 需密码" : "";
+        var subtitle = $"{preferredHost ?? "待分配 IP"} · {statusText}{pinTag}";
+        var badge = string.IsNullOrWhiteSpace(synced.GpuEncoder) ? "云同步" : $"云 · {synced.GpuEncoder}";
 
         return new DeviceListItem(
-            Profile: profile,
-            Name: profile.Name,
-            Id: profile.Id ?? profile.HostAddress ?? "",
+            LocalProfile: null,
+            Name: synced.Name,
+            HostAddress: preferredHost,
+            Stream: defaultStream,
+            StreamAppName: DeviceProfile.DefaultStreamAppName,
             TargetSubtitle: subtitle,
-            ModeBadgeText: isStream ? "高刷" : "办公",
-            IsStreamMode: isStream);
+            ModeBadgeText: badge,
+            IsCloudSynced: true,
+            IsOnline: synced.IsOnline,
+            SyncedDevice: synced);
     }
 }
 
@@ -51,6 +97,7 @@ public partial class MainWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RemoteDesk", "settings.json"));
     private readonly EngineManager engineManager = new();
 
+    private SessionBridgeServer? sessionBridgeServer;
     private AppSettings settings = new();
     private DeviceProfile? editingDevice;
     private AppPage currentPage = AppPage.Remote;
@@ -59,12 +106,18 @@ public partial class MainWindow : Window
     private bool isDraggingBitrate;
     private bool isSyncingHostToggle;
 
-    private DeviceProfile? SelectedDevice => (DeviceList.SelectedItem as DeviceListItem)?.Profile;
+    private DeviceListItem? SelectedListItem => DeviceList.SelectedItem as DeviceListItem;
 
     public MainWindow()
     {
         InitializeComponent();
         InitializeEngineHub();
+
+        if (OperatingSystem.IsWindows())
+        {
+            sessionBridgeServer = new SessionBridgeServer(Dispatcher);
+            sessionBridgeServer.Start();
+        }
 
         try
         {
@@ -77,6 +130,7 @@ public partial class MainWindow : Window
 
         ApplyTheme(settings.UseDarkTheme);
         SyncMirrorInputFromSettings();
+        InitializeAccount();
         InitializeNetwork();
         InitializeUpdates();
         RefreshDevices(0);
@@ -94,10 +148,13 @@ public partial class MainWindow : Window
             if (currentPage == AppPage.Host)
                 RefreshHostStatus();
             else if (currentPage == AppPage.Network)
-                _ = RefreshEasyTierStatusAsync();
+                _ = RefreshDaemonAndEasyTierAsync();
         };
         Closed += (_, _) =>
         {
+            sessionBridgeServer?.Dispose();
+            sessionBridgeServer = null;
+            accountSyncTimer.Stop();
             updateTimer.Stop();
             updateCts?.Cancel();
             updateCts?.Dispose();
@@ -115,6 +172,14 @@ public partial class MainWindow : Window
         catch (Exception)
         {
             // Keep UI responsive even if auto-start/status query fails.
+        }
+
+        try
+        {
+            await TryAutoSyncOnLaunchAsync();
+        }
+        catch (Exception)
+        {
         }
 
         await SafeCheckUpdatesAsync(userInitiated: false);
@@ -202,28 +267,32 @@ public partial class MainWindow : Window
         OpenEditor(
             device: null,
             prefillName: hostname,
-            prefillHostAddress: virtualIpv4,
-            prefillMode: ConnectionMode.Stream);
+            prefillHostAddress: virtualIpv4);
         ShowEditorMessage($"已从 EasyTier 节点预填主机名与虚拟 IP（{virtualIpv4}），确认后点击「保存电脑」即可发起高刷串流。");
     }
 
-    private void EditDevice(object sender, RoutedEventArgs e) => OpenEditor(SelectedDevice);
+    private void EditDevice(object sender, RoutedEventArgs e)
+    {
+        if (SelectedListItem is { IsCloudSynced: true } cloudItem)
+        {
+            ShowStatus($"「{cloudItem.Name}」由账号云同步自动管理，无需手动编辑地址。");
+            return;
+        }
+        OpenEditor(SelectedListItem?.LocalProfile);
+    }
 
     private void OpenEditor(
         DeviceProfile? device,
         string? prefillName = null,
-        string? prefillHostAddress = null,
-        ConnectionMode? prefillMode = null)
+        string? prefillHostAddress = null)
     {
         editingDevice = device;
         RemoveButton.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
         EditorTitle.Text = device is null ? "添加电脑" : "编辑电脑";
         NameInput.Text = device?.Name ?? prefillName ?? "";
         HostAddressInput.Text = device?.HostAddress ?? prefillHostAddress ?? "";
-        IdInput.Text = device?.Id ?? "";
         StreamAppNameInput.Text = device?.StreamAppName ?? DeviceProfile.DefaultStreamAppName;
-        SelectComboByTag(EditorModeCombo, (device?.PreferredMode ?? prefillMode ?? ConnectionMode.Stream).ToString());
-        ShowEditorMessage("校园网/局域网地址或 EasyTier 虚拟 IP 用于 Moonlight 高刷串流，RustDesk ID 用于办公模式。");
+        ShowEditorMessage("填写目标主机的校园网 / 局域网地址或 EasyTier 虚拟 IP，保存后将使用内置原生高刷窗口控制。");
         ShowStatus("");
 
         EmptyView.Visibility = Visibility.Collapsed;
@@ -262,14 +331,15 @@ public partial class MainWindow : Window
     {
         try
         {
-            var index = DeviceList.SelectedIndex;
-            if (editingDevice is null || index < 0 || !ReferenceEquals(editingDevice, SelectedDevice))
+            var localIndex = FindLocalDeviceIndex(SelectedListItem);
+            if (editingDevice is null || localIndex < 0 || !ReferenceEquals(editingDevice, SelectedListItem?.LocalProfile))
                 return;
 
+            var listIndex = DeviceList.SelectedIndex;
             var devices = settings.Devices.ToList();
-            devices.RemoveAt(index);
+            devices.RemoveAt(localIndex);
             SaveSettings(settings with { Devices = devices });
-            RefreshDevices(Math.Min(index, devices.Count - 1));
+            RefreshDevices(Math.Max(0, listIndex - 1));
             ShowStatus("已从本机列表移除电脑。");
             FocusDeviceAction();
         }
@@ -284,46 +354,40 @@ public partial class MainWindow : Window
     {
         try
         {
-            var selectedModeTag = (EditorModeCombo.SelectedItem as ComboBoxItem)?.Tag as string;
-            var preferredMode = string.Equals(selectedModeTag, nameof(ConnectionMode.Office), StringComparison.Ordinal)
-                ? ConnectionMode.Office
-                : ConnectionMode.Stream;
-
             var streamOptions = editingDevice?.Stream ?? settings.DefaultStream ?? StreamOptions.FromPreset(StreamPresetKind.High2K);
             var appName = string.IsNullOrWhiteSpace(StreamAppNameInput.Text) ? null : StreamAppNameInput.Text;
 
             var device = DeviceProfile.Create(
                 NameInput.Text,
-                IdInput.Text,
                 HostAddressInput.Text,
-                preferredMode,
                 streamOptions,
                 appName);
 
             var devices = settings.Devices.ToList();
-            if (device.Id is not null && devices.Any(existing =>
+            if (devices.Any(existing =>
                 !ReferenceEquals(existing, editingDevice) &&
-                string.Equals(existing.Id, device.Id, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.HostAddress, device.HostAddress, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(existing.StreamAppName, device.StreamAppName, StringComparison.OrdinalIgnoreCase)))
             {
-                ShowEditorMessage("相同的 RustDesk 设备 ID 已存在于列表中。", warning: true);
-                IdInput.Focus();
+                ShowEditorMessage("相同主机地址与串流应用名的电脑已存在于列表中。", warning: true);
+                HostAddressInput.Focus();
                 return;
             }
 
-            var index = devices.Count;
             if (editingDevice is null)
             {
                 devices.Add(device);
             }
             else
             {
-                index = DeviceList.SelectedIndex;
-                devices[index] = device;
+                var localIndex = FindLocalDeviceIndex(SelectedListItem);
+                if (localIndex < 0)
+                    return;
+                devices[localIndex] = device;
             }
 
             SaveSettings(settings with { Devices = devices });
-            RefreshDevices(index);
+            RefreshDevices(0, DeviceListItem.FromProfile(device).UniqueKey);
             ShowStatus($"已保存设备「{device.Name}」。");
             FocusDeviceAction();
         }
@@ -332,37 +396,15 @@ public partial class MainWindow : Window
             ShowEditorMessage(error.Message, warning: true);
             if (error.ParamName == "name")
                 NameInput.Focus();
-            else if (error.ParamName == "hostAddress")
-                HostAddressInput.Focus();
             else if (error.ParamName == "streamAppName")
                 StreamAppNameInput.Focus();
             else
-                IdInput.Focus();
+                HostAddressInput.Focus();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             ShowEditorMessage("无法保存设置，请检查本机用户目录的写入权限。", warning: true);
         }
-    }
-
-    private void SelectStreamMode(object sender, RoutedEventArgs e) => SwitchSelectedDeviceMode(ConnectionMode.Stream);
-
-    private void SelectOfficeMode(object sender, RoutedEventArgs e) => SwitchSelectedDeviceMode(ConnectionMode.Office);
-
-    private void SwitchSelectedDeviceMode(ConnectionMode mode)
-    {
-        if (SelectedDevice is not { } device || device.PreferredMode == mode)
-            return;
-
-        var updated = DeviceProfile.Create(
-            device.Name,
-            device.Id,
-            device.HostAddress,
-            mode,
-            device.Stream,
-            device.StreamAppName);
-
-        PersistUpdatedSelectedDevice(updated);
     }
 
     private void SelectPresetUltra120(object sender, RoutedEventArgs e) => ApplyStreamPreset(StreamPresetKind.Ultra120);
@@ -373,16 +415,16 @@ public partial class MainWindow : Window
 
     private void SelectPresetCustom(object sender, RoutedEventArgs e)
     {
-        if (SelectedDevice is not { } device)
+        if (SelectedListItem is not { } item)
             return;
 
-        var custom = device.Stream with { Preset = StreamPresetKind.Custom };
+        var custom = item.Stream with { Preset = StreamPresetKind.Custom };
         UpdateSelectedDeviceStream(custom, persist: true);
     }
 
     private void ApplyStreamPreset(StreamPresetKind preset)
     {
-        if (SelectedDevice is null)
+        if (SelectedListItem is null)
             return;
 
         var options = StreamOptions.FromPreset(preset);
@@ -391,7 +433,7 @@ public partial class MainWindow : Window
 
     private void StreamParamChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (isSyncingStreamUi || SelectedDevice is null)
+        if (isSyncingStreamUi || SelectedListItem is null)
             return;
 
         CommitCustomStreamFromControls(persist: true);
@@ -402,7 +444,7 @@ public partial class MainWindow : Window
     private void BitrateSliderDragCompleted(object sender, DragCompletedEventArgs e)
     {
         isDraggingBitrate = false;
-        if (isSyncingStreamUi || SelectedDevice is null)
+        if (isSyncingStreamUi || SelectedListItem is null)
             return;
 
         CommitCustomStreamFromControls(persist: true);
@@ -416,7 +458,7 @@ public partial class MainWindow : Window
         var mbps = (int)Math.Round(e.NewValue);
         BitrateValueText.Text = $"{mbps} Mbps";
 
-        if (isSyncingStreamUi || SelectedDevice is null)
+        if (isSyncingStreamUi || SelectedListItem is null)
             return;
 
         CommitCustomStreamFromControls(persist: !isDraggingBitrate);
@@ -428,7 +470,7 @@ public partial class MainWindow : Window
             return;
 
         HardwareDecodeToggle.Content = HardwareDecodeToggle.IsChecked == true ? "已开启" : "已关闭";
-        if (isSyncingStreamUi || SelectedDevice is null)
+        if (isSyncingStreamUi || SelectedListItem is null)
             return;
 
         CommitCustomStreamFromControls(persist: true);
@@ -436,12 +478,12 @@ public partial class MainWindow : Window
 
     private void CommitCustomStreamFromControls(bool persist)
     {
-        if (SelectedDevice is not { } device)
+        if (SelectedListItem is not { } item)
             return;
 
-        var (width, height) = ParseSelectedResolution(device.Stream.Width, device.Stream.Height);
-        var fps = ParseSelectedFps(device.Stream.Fps);
-        var codec = ParseSelectedCodec(device.Stream.Codec);
+        var (width, height) = ParseSelectedResolution(item.Stream.Width, item.Stream.Height);
+        var fps = ParseSelectedFps(item.Stream.Fps);
+        var codec = ParseSelectedCodec(item.Stream.Codec);
         var bitrateMbps = Math.Clamp((int)Math.Round(BitrateSlider.Value), StreamOptions.MinBitrateMbps, StreamOptions.MaxBitrateMbps);
         var hwDecode = HardwareDecodeToggle.IsChecked == true;
 
@@ -459,40 +501,42 @@ public partial class MainWindow : Window
 
     private void UpdateSelectedDeviceStream(StreamOptions options, bool persist)
     {
-        if (SelectedDevice is not { } device)
+        if (SelectedListItem is not { } item)
             return;
 
-        var updated = DeviceProfile.Create(
-            device.Name,
-            device.Id,
-            device.HostAddress,
-            device.PreferredMode,
-            options,
-            device.StreamAppName);
-
         if (persist)
-        {
-            PersistUpdatedSelectedDevice(updated);
-        }
+            PersistUpdatedSelectedItemStream(item, options);
         else
-        {
-            // Live UI preview while dragging slider without spamming disk writes.
             SyncStreamControls(options, syncSliderValue: false);
-        }
     }
 
-    private void PersistUpdatedSelectedDevice(DeviceProfile updated)
+    private void PersistUpdatedSelectedItemStream(DeviceListItem item, StreamOptions nextStream)
     {
-        var index = DeviceList.SelectedIndex;
-        if (index < 0 || index >= settings.Devices.Count)
+        if (item.IsCloudSynced)
+        {
+            try
+            {
+                SaveSettings(settings with { DefaultStream = nextStream });
+                RefreshDevices(DeviceList.SelectedIndex, item.UniqueKey);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                ShowStatus("无法保存设备参数，请检查本机用户目录写入权限。", warning: true);
+            }
+            return;
+        }
+
+        var localIdx = FindLocalDeviceIndex(item);
+        if (localIdx < 0 || localIdx >= settings.Devices.Count)
             return;
 
         try
         {
             var devices = settings.Devices.ToList();
-            devices[index] = updated;
-            SaveSettings(settings with { Devices = devices, DefaultStream = updated.Stream });
-            RefreshDevices(index);
+            var existing = devices[localIdx];
+            devices[localIdx] = DeviceProfile.Create(existing.Name, existing.HostAddress, nextStream, existing.StreamAppName);
+            SaveSettings(settings with { Devices = devices, DefaultStream = nextStream });
+            RefreshDevices(DeviceList.SelectedIndex, item.UniqueKey);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -500,98 +544,128 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ConnectDevice(object sender, RoutedEventArgs e)
+    private int FindLocalDeviceIndex(DeviceListItem? item)
     {
-        if (SelectedDevice is not { } device)
-            return;
+        if (item is null || item.IsCloudSynced || item.LocalProfile is null)
+            return -1;
 
-        if (device.PreferredMode == ConnectionMode.Stream)
+        for (var i = 0; i < settings.Devices.Count; i++)
         {
-            if (!device.SupportsStream)
-            {
-                ShowStatus("该设备未配置校园网/局域网地址，请点击「编辑」补充主机地址后再发起高刷连接。", warning: true);
-                return;
-            }
-
-            var moonlightExe = ResolveMoonlightExecutable();
-            if (moonlightExe is null)
-            {
-                NavigateTo(AppPage.Engines);
-                ShowStatus("尚未安装 Moonlight 高刷控制端，请点击「一键安装」或「导入本地包」。", warning: true);
-                return;
-            }
-
-            try
-            {
-                var startInfo = MoonlightClient.CreateStreamConnection(moonlightExe, device);
-                using var process = Process.Start(startInfo);
-                ShowStatus($"已启动 Moonlight 高刷串流 -> {device.HostAddress}（{device.Stream.Width}x{device.Stream.Height} @ {device.Stream.Fps}fps / {device.Stream.BitrateMbps}Mbps）。");
-            }
-            catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException or ArgumentException)
-            {
-                ShowStatus($"启动 Moonlight 失败：{error.Message}", warning: true);
-            }
-            return;
+            if (ReferenceEquals(settings.Devices[i], item.LocalProfile))
+                return i;
         }
-
-        // Office mode (RustDesk)
-        var rustDeskExe = ResolveRustDeskExecutable();
-        if (rustDeskExe is null)
-        {
-            NavigateTo(AppPage.Engines);
-            ShowStatus("尚未安装 RustDesk 办公引擎，请在引擎中心一键安装或指定路径。", warning: true);
-            return;
-        }
-
-        try
-        {
-            var startInfo = RustDeskClient.CreateConnection(rustDeskExe, device);
-            using var process = Process.Start(startInfo);
-            var target = device.Id ?? device.HostAddress;
-            ShowStatus($"已向 RustDesk 发起办公连接 -> {target}，请在会话窗口查看结果。");
-        }
-        catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException or ArgumentException)
-        {
-            ShowStatus($"启动 RustDesk 失败：{error.Message}", warning: true);
-        }
+        return -1;
     }
 
-    private void PairDevice(object sender, RoutedEventArgs e)
+    private async void ConnectDevice(object sender, RoutedEventArgs e)
     {
-        if (SelectedDevice is not { } device)
+        if (SelectedListItem is not { } item)
             return;
 
-        if (string.IsNullOrEmpty(device.HostAddress))
+        if (!NativeStreamBridge.IsAvailable())
+        {
+            ShowStatus("未检测到内置原生控屏组件 RemoteDesk.StreamCore.dll，请重新构建或完整安装客户端。", warning: true);
+            return;
+        }
+
+        if (item.IsCloudSynced)
+        {
+            await ConnectSyncedOrAutoPairDeviceAsync(item, securityPin: null, forcePair: false);
+            return;
+        }
+
+        if (!item.SupportsStream)
+        {
+            ShowStatus("该设备未配置目标主机地址，请点击「编辑」补充主机地址。", warning: true);
+            return;
+        }
+
+        OpenNativeSessionWindow(item.ToProfile(), item.HostAddress!, item);
+    }
+
+    private async void PairDevice(object sender, RoutedEventArgs e)
+    {
+        if (SelectedListItem is not { } item)
+            return;
+
+        if (item.IsCloudSynced)
+        {
+            await ConnectSyncedOrAutoPairDeviceAsync(item, securityPin: null, forcePair: true);
+            return;
+        }
+
+        if (!NativeStreamBridge.IsAvailable())
+        {
+            ShowStatus("未检测到内置原生控屏组件 RemoteDesk.StreamCore.dll，无法发起配对。", warning: true);
+            return;
+        }
+
+        if (string.IsNullOrEmpty(item.HostAddress))
         {
             ShowStatus("配对需要目标主机的校园网/局域网地址，请先点击「编辑」填写地址。", warning: true);
             return;
         }
 
-        var moonlightExe = ResolveMoonlightExecutable();
-        if (moonlightExe is null)
-        {
-            NavigateTo(AppPage.Engines);
-            ShowStatus("尚未安装 Moonlight，无法发起配对。请先在引擎中心安装 Moonlight。", warning: true);
-            return;
-        }
-
+        PairButton.IsEnabled = false;
         try
         {
-            var startInfo = MoonlightClient.CreatePairConnection(moonlightExe, device.HostAddress);
-            using var process = Process.Start(startInfo);
-            ShowStatus($"已向 {device.HostAddress} 发起 Moonlight 配对请求，请在目标电脑的 Sunshine 网页控制台输入 PIN 码。");
+            using var identity = GameStreamIdentity.LoadOrCreate();
+            var gsClient = new GameStreamClient(identity);
+            var info = await gsClient.GetServerInfoAsync(item.HostAddress);
+            if (info.PairStatus == 1)
+            {
+                ShowStatus($"目标主机 {item.HostAddress} 已完成配对，可直接点击「发起高刷连接」。");
+                return;
+            }
+
+            var pin = RandomNumberGenerator.GetInt32(0, 10000).ToString("D4", CultureInfo.InvariantCulture);
+            ShowStatus($"正在向 {item.HostAddress} 发起原生配对，请在目标电脑 Sunshine 控制台 (:47990) 输入 PIN 码：{pin}");
+            var (ok, message) = await gsClient.PairWithPinAsync(item.HostAddress, pin);
+            ShowStatus(ok ? $"配对成功：{item.HostAddress}，可直接发起高刷连接。" : $"配对失败：{message}", warning: !ok);
         }
-        catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException or ArgumentException)
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or InvalidDataException or IOException or InvalidOperationException)
         {
-            ShowStatus($"启动配对失败：{error.Message}", warning: true);
+            ShowStatus($"原生配对失败：{error.Message}", warning: true);
+        }
+        finally
+        {
+            PairButton.IsEnabled = true;
         }
     }
 
-    private void RefreshDevices(int index)
+    private void RefreshDevices(int index, string? selectUniqueKey = null)
     {
-        var items = settings.Devices.Select(DeviceListItem.FromProfile).ToList();
+        var items = new List<DeviceListItem>();
+        var localKey = EnsureLocalDeviceKeyPersisted();
+        var defaultStream = settings.DefaultStream ?? StreamOptions.FromPreset(StreamPresetKind.High2K);
+        var cloudHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var synced in syncedDevices)
+        {
+            if (string.Equals(synced.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var cloudItem = DeviceListItem.FromSyncedDevice(synced, defaultStream);
+            items.Add(cloudItem);
+            if (!string.IsNullOrWhiteSpace(synced.VirtualIpv4))
+                cloudHosts.Add(synced.VirtualIpv4);
+        }
+
+        foreach (var local in settings.Devices)
+        {
+            if (!string.IsNullOrWhiteSpace(local.HostAddress) && cloudHosts.Contains(local.HostAddress))
+                continue;
+            items.Add(DeviceListItem.FromProfile(local));
+        }
+
         DeviceList.ItemsSource = items;
-        DeviceList.SelectedIndex = items.Count == 0 ? -1 : Math.Clamp(index, 0, items.Count - 1);
+        var resolvedIndex = -1;
+        if (!string.IsNullOrEmpty(selectUniqueKey))
+            resolvedIndex = items.FindIndex(i => string.Equals(i.UniqueKey, selectUniqueKey, StringComparison.Ordinal));
+        if (resolvedIndex < 0 && items.Count > 0)
+            resolvedIndex = Math.Clamp(index, 0, items.Count - 1);
+
+        DeviceList.SelectedIndex = resolvedIndex;
         DeviceCount.Text = $"{items.Count} 台";
         DeviceListEmpty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (DeviceList.SelectedItem is not null)
@@ -601,7 +675,7 @@ public partial class MainWindow : Window
 
     private void DeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (SelectedDevice is not null && currentPage != AppPage.Remote)
+        if (SelectedListItem is not null && currentPage != AppPage.Remote)
             NavigateTo(AppPage.Remote);
         ShowDevice();
         ShowStatus("");
@@ -615,48 +689,50 @@ public partial class MainWindow : Window
 
     private void ShowDevice()
     {
-        var device = SelectedDevice;
+        var item = SelectedListItem;
         editingDevice = null;
+        pendingSecurityPinItem = null;
+        if (SecurityPinPromptCard is not null)
+            SecurityPinPromptCard.Visibility = Visibility.Collapsed;
         SetDeviceListEnabled(true);
 
-        EmptyView.Visibility = device is null ? Visibility.Visible : Visibility.Collapsed;
-        DeviceView.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
+        EmptyView.Visibility = item is null ? Visibility.Visible : Visibility.Collapsed;
+        DeviceView.Visibility = item is null ? Visibility.Collapsed : Visibility.Visible;
         EditorView.Visibility = Visibility.Collapsed;
         RemovalView.Visibility = Visibility.Collapsed;
 
-        if (device is null)
+        if (item is null)
             return;
 
-        var isStream = device.PreferredMode == ConnectionMode.Stream;
+        DeviceNameText.Text = item.Name;
+        if (item is { IsCloudSynced: true, SyncedDevice: { } synced })
+        {
+            DeviceActiveModeText.Text = synced.IsOnline ? "云同步 · 在线" : "云同步 · 离线";
+            DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, synced.IsOnline ? "ReadySoft" : "SurfaceSubtle");
+            DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, synced.IsOnline ? "Ready" : "Muted");
+            DeviceHostText.Text = synced.VirtualIpv4 is not null ? $"虚拟内网 {synced.VirtualIpv4}" : "待分配虚拟 IP";
+            DeviceSecondaryText.Text = synced.LanIpv4 is not null ? $"局域网 {synced.LanIpv4}" : (synced.GpuEncoder is not null ? $"编码 {synced.GpuEncoder}" : "自动选路");
+        }
+        else
+        {
+            DeviceActiveModeText.Text = "原生高刷";
+            DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, "AccentSoft");
+            DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+            DeviceHostText.Text = item.HostAddress is not null ? $"直连 {item.HostAddress}" : "未配置直连地址";
+            DeviceSecondaryText.Text = "办公/游戏双模";
+        }
 
-        DeviceNameText.Text = device.Name;
-        DeviceActiveModeText.Text = isStream ? "高刷串流" : "办公模式";
-        DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, isStream ? "AccentSoft" : "PurpleSoft");
-        DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, isStream ? "Accent" : "PurpleAccent");
+        DeviceAppText.Text = $"应用 {item.StreamAppName}";
+        DeviceAppPill.Visibility = Visibility.Visible;
 
-        DeviceHostText.Text = device.HostAddress is not null ? $"直连 {device.HostAddress}" : "未配置直连地址";
-        DeviceIdText.Text = device.Id is not null ? $"ID {device.Id}" : "未配置 RustDesk ID";
-        DeviceAppText.Text = $"应用 {device.StreamAppName}";
-        DeviceAppPill.Visibility = isStream ? Visibility.Visible : Visibility.Collapsed;
+        SyncStreamControls(item.Stream, syncSliderValue: true);
 
-        ModeStreamButton.Tag = isStream ? "Selected" : null;
-        ModeOfficeButton.Tag = isStream ? null : "Selected";
-        ModeHintText.Text = isStream
-            ? "Moonlight 低延迟硬件串流，适合高帧率操控"
-            : "RustDesk 通用桌面协议，适合跨网办公与文件传输";
-
-        OfficeModeNotice.Visibility = isStream ? Visibility.Collapsed : Visibility.Visible;
-        StreamConfigBody.IsEnabled = isStream;
-        StreamConfigBody.Opacity = isStream ? 1.0 : 0.48;
-
-        SyncStreamControls(device.Stream, syncSliderValue: true);
-
-        ConnectButtonText.Text = isStream ? "发起高刷连接" : "发起办公连接";
-        ConnectButtonIcon.Text = isStream ? "\uE945" : "\uE821";
-        PairButton.Visibility = isStream ? Visibility.Visible : Visibility.Collapsed;
-        ActionTargetSummary.Text = isStream
-            ? (device.HostAddress is not null ? $"目标 {device.HostAddress} · {device.StreamAppName}" : "缺少目标主机地址")
-            : $"目标 {device.Id ?? device.HostAddress}";
+        ConnectButtonText.Text = "发起高刷连接";
+        ConnectButtonIcon.Text = "\uE945";
+        PairButton.Visibility = Visibility.Visible;
+        ActionTargetSummary.Text = item.HostAddress is not null
+            ? $"目标 {item.HostAddress} · {item.StreamAppName}"
+            : "等待分配虚拟内网地址";
 
         UpdateDeviceActionEngineReadiness();
     }
@@ -696,46 +772,30 @@ public partial class MainWindow : Window
 
     private void UpdateDeviceActionEngineReadiness()
     {
-        if (SelectedDevice is not { } device)
+        if (SelectedListItem is not { } item)
             return;
 
-        if (device.PreferredMode == ConnectionMode.Stream)
+        if (!NativeStreamBridge.IsAvailable())
         {
-            var mlPath = ResolveMoonlightExecutable();
-            if (!device.SupportsStream)
-            {
-                ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
-                ActionEngineHint.Text = "高刷模式需要配置目标电脑的校园网/局域网地址，请点击右上角「编辑」。";
-                ActionEngineLink.Visibility = Visibility.Collapsed;
-            }
-            else if (mlPath is null)
-            {
-                ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
-                ActionEngineHint.Text = "未检测到 Moonlight 控制端，请前往引擎中心一键安装或导入便携包。";
-                ActionEngineLink.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                ActionEngineDot.SetResourceReference(Shape.FillProperty, "Ready");
-                ActionEngineHint.Text = $"Moonlight 控制端已就绪（{Path.GetFileName(mlPath)}）";
-                ActionEngineLink.Visibility = Visibility.Collapsed;
-            }
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Danger");
+            ActionEngineHint.Text = "未检测到内置原生控屏引擎 RemoteDesk.StreamCore.dll，请检查程序安装完整性。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
+        }
+        else if (!item.SupportsStream)
+        {
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
+            ActionEngineHint.Text = item.IsCloudSynced
+                ? "等待目标电脑上线同步虚拟内网 IP（建议在被控端开启后台守护服务）。"
+                : "请点击右上角「编辑」补充目标电脑主机地址。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
         }
         else
         {
-            var rdPath = ResolveRustDeskExecutable();
-            if (rdPath is null)
-            {
-                ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
-                ActionEngineHint.Text = "未检测到 RustDesk 引擎，请前往引擎中心一键安装或指定程序路径。";
-                ActionEngineLink.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                ActionEngineDot.SetResourceReference(Shape.FillProperty, "Ready");
-                ActionEngineHint.Text = $"RustDesk 办公引擎已就绪（{Path.GetFileName(rdPath)}）";
-                ActionEngineLink.Visibility = Visibility.Collapsed;
-            }
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Ready");
+            ActionEngineHint.Text = item.IsCloudSynced
+                ? "内置原生高刷引擎已就绪 · 支持剪贴板 / 文件 / 分辨率适配 / 防窥"
+                : "内置原生高刷控屏引擎已就绪（D3D11 硬件解码）";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -743,7 +803,7 @@ public partial class MainWindow : Window
     {
         if (currentPage != AppPage.Remote)
             return;
-        (SelectedDevice is null ? AddDeviceButton : ConnectButton).Focus();
+        (SelectedListItem is null ? AddDeviceButton : ConnectButton).Focus();
     }
 
     private (int Width, int Height) ParseSelectedResolution(int fallbackW, int fallbackH)

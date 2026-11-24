@@ -2,9 +2,7 @@ namespace RemoteDesk;
 
 internal enum EngineKind
 {
-    Moonlight,
     Sunshine,
-    RustDesk,
     EasyTier,
 }
 

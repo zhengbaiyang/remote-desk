@@ -8,11 +8,6 @@ internal sealed record AppSettings
 {
     public IReadOnlyList<DeviceProfile> Devices { get; init; } = [];
 
-    public string? ClientPath { get; init; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? MoonlightPath { get; init; }
-
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SunshinePath { get; init; }
 
@@ -36,9 +31,27 @@ internal sealed record AppSettings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public StreamOptions? DefaultStream { get; init; }
 
-    [JsonPropertyName("device")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public DeviceProfile? LegacyDevice { get; init; }
+    public AccountSettings? Account { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LocalDeviceKey { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? PairedDeviceIds { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SecurityPinRequired { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SecurityPinSalt { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SecurityPinHash { get; init; }
+
+    public bool AutoMatchResolution { get; init; } = true;
+
+    public bool AutoSyncClipboard { get; init; } = true;
 }
 
 internal sealed class SettingsStore(string path)
@@ -48,27 +61,87 @@ internal sealed class SettingsStore(string path)
         WriteIndented = true
     };
 
+    private sealed record StoredDeviceEntry(
+        string? Name,
+        string? HostAddress,
+        StreamOptions? Stream,
+        string? StreamAppName);
+
+    private sealed record StoredSettingsDocument
+    {
+        public IReadOnlyList<StoredDeviceEntry?>? Devices { get; init; }
+        public string? SunshinePath { get; init; }
+        public string? EasyTierPath { get; init; }
+        public EasyTierConfig? EasyTier { get; init; }
+        public string? DownloadMirrorPrefix { get; init; }
+        public string? UpdateRepository { get; init; }
+        public bool UseDarkTheme { get; init; } = true;
+        public bool HostModeEnabled { get; init; }
+        public StreamOptions? DefaultStream { get; init; }
+        public AccountSettings? Account { get; init; }
+        public string? LocalDeviceKey { get; init; }
+        public IReadOnlyList<string>? PairedDeviceIds { get; init; }
+        public bool SecurityPinRequired { get; init; }
+        public string? SecurityPinSalt { get; init; }
+        public string? SecurityPinHash { get; init; }
+        public bool AutoMatchResolution { get; init; } = true;
+        public bool AutoSyncClipboard { get; init; } = true;
+
+        [JsonPropertyName("device")]
+        public StoredDeviceEntry? LegacyDevice { get; init; }
+    }
+
     public AppSettings Load()
     {
         try
         {
-            var stored = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), JsonOptions)
+            var stored = JsonSerializer.Deserialize<StoredSettingsDocument>(File.ReadAllText(path), JsonOptions)
                 ?? throw new JsonException("设备设置为空。");
-            var devices = stored.Devices ?? [];
-            if (devices.Any(device => device is null))
+
+            var rawDevices = stored.Devices ?? [];
+            if (rawDevices.Any(device => device is null))
                 throw new JsonException("设备列表包含空记录。");
-            if (devices.Count == 0 && stored.LegacyDevice is { } legacy)
-                devices = [legacy];
+
+            var migratedDevices = new List<DeviceProfile>(rawDevices.Count);
+            foreach (var entry in rawDevices)
+            {
+                if (entry is null || string.IsNullOrWhiteSpace(entry.HostAddress) || string.IsNullOrWhiteSpace(entry.Name))
+                    continue;
+                migratedDevices.Add(DeviceProfile.Create(entry.Name, entry.HostAddress, entry.Stream, entry.StreamAppName));
+            }
+
+            if (migratedDevices.Count == 0 &&
+                stored.LegacyDevice is { } legacy &&
+                !string.IsNullOrWhiteSpace(legacy.HostAddress) &&
+                !string.IsNullOrWhiteSpace(legacy.Name))
+            {
+                migratedDevices.Add(DeviceProfile.Create(legacy.Name, legacy.HostAddress, legacy.Stream, legacy.StreamAppName));
+            }
+
             var validatedDefaultStream = stored.DefaultStream?.Validate();
             var validatedEasyTier = stored.EasyTier is { Enabled: true } enabledEasyTier
                 ? EasyTierConfig.Validate(enabledEasyTier)
                 : stored.EasyTier;
-            return stored with
+
+            return new AppSettings
             {
-                Devices = devices,
-                DefaultStream = validatedDefaultStream,
+                Devices = migratedDevices,
+                SunshinePath = stored.SunshinePath,
+                EasyTierPath = stored.EasyTierPath,
                 EasyTier = validatedEasyTier,
-                LegacyDevice = null,
+                DownloadMirrorPrefix = stored.DownloadMirrorPrefix,
+                UpdateRepository = stored.UpdateRepository,
+                UseDarkTheme = stored.UseDarkTheme,
+                HostModeEnabled = stored.HostModeEnabled,
+                DefaultStream = validatedDefaultStream,
+                Account = stored.Account,
+                LocalDeviceKey = stored.LocalDeviceKey,
+                PairedDeviceIds = stored.PairedDeviceIds,
+                SecurityPinRequired = stored.SecurityPinRequired,
+                SecurityPinSalt = stored.SecurityPinSalt,
+                SecurityPinHash = stored.SecurityPinHash,
+                AutoMatchResolution = stored.AutoMatchResolution,
+                AutoSyncClipboard = stored.AutoSyncClipboard,
             };
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)

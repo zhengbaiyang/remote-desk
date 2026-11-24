@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Shapes;
 using Microsoft.Win32;
+using RemoteDesk.Streaming;
 using Path = System.IO.Path;
 
 namespace RemoteDesk;
@@ -231,48 +232,34 @@ public partial class MainWindow
         EngineCardsList.ItemsSource = engineCards;
     }
 
-    private string? ResolveMoonlightExecutable() =>
-        MoonlightClient.FindExecutable(settings.MoonlightPath, engineManager.FindManagedExecutable(EngineKind.Moonlight));
-
     private string? ResolveSunshineExecutable() =>
         HostServiceManager.FindSunshineExecutable(settings.SunshinePath, engineManager.FindManagedExecutable(EngineKind.Sunshine));
-
-    private string? ResolveRustDeskExecutable() =>
-        RustDeskClient.FindExecutable(settings.ClientPath, engineManager.FindManagedExecutable(EngineKind.RustDesk));
 
     private string? ResolveEasyTierExecutable() =>
         EasyTierManager.FindCoreExecutable(settings.EasyTierPath, engineManager.FindManagedExecutable(EngineKind.EasyTier));
 
     private void RefreshAllEngines()
     {
-        var moonlightFallback = MoonlightClient.FindExecutable(settings.MoonlightPath, null);
         var sunshineFallback = HostServiceManager.FindSunshineExecutable(settings.SunshinePath, null);
-        var rustDeskFallback = RustDeskClient.FindExecutable(settings.ClientPath, null);
         var easyTierFallback = EasyTierManager.FindCoreExecutable(settings.EasyTierPath, null);
 
-        var mlStatus = engineManager.Inspect(EngineKind.Moonlight, moonlightFallback);
         var ssStatus = engineManager.Inspect(EngineKind.Sunshine, sunshineFallback);
-        var rdStatus = engineManager.Inspect(EngineKind.RustDesk, rustDeskFallback);
         var etStatus = engineManager.Inspect(EngineKind.EasyTier, easyTierFallback);
 
-        engineCardMap[EngineKind.Moonlight].ApplyStatus(mlStatus, ResolveMoonlightExecutable());
         engineCardMap[EngineKind.Sunshine].ApplyStatus(ssStatus, ResolveSunshineExecutable());
-        engineCardMap[EngineKind.RustDesk].ApplyStatus(rdStatus, ResolveRustDeskExecutable());
         engineCardMap[EngineKind.EasyTier].ApplyStatus(etStatus, ResolveEasyTierExecutable());
 
-        bool mlReady = ResolveMoonlightExecutable() is not null;
+        bool coreReady = NativeStreamBridge.IsAvailable();
         bool ssReady = ResolveSunshineExecutable() is not null;
-        bool rdReady = ResolveRustDeskExecutable() is not null;
         bool etReady = ResolveEasyTierExecutable() is not null;
-        int readyCount = (mlReady ? 1 : 0) + (ssReady ? 1 : 0) + (rdReady ? 1 : 0) + (etReady ? 1 : 0);
+        int readyCount = (coreReady ? 1 : 0) + (ssReady ? 1 : 0) + (etReady ? 1 : 0);
 
-        RailEngineCount.Text = $"{readyCount}/4";
-        TitleStatusText.Text = $"引擎就绪 {readyCount}/4";
-        TitleStatusDot.SetResourceReference(Shape.FillProperty, readyCount == 4 ? "Ready" : (readyCount > 0 ? "Accent" : "Warning"));
+        RailEngineCount.Text = $"{readyCount}/3";
+        TitleStatusText.Text = $"核心就绪 {readyCount}/3";
+        TitleStatusDot.SetResourceReference(Shape.FillProperty, readyCount == 3 ? "Ready" : (readyCount > 0 ? "Accent" : "Warning"));
 
-        RailMoonlightDot.SetResourceReference(Shape.FillProperty, mlReady ? "Ready" : "Warning");
+        RailNativeCoreDot.SetResourceReference(Shape.FillProperty, coreReady ? "Ready" : "Danger");
         RailSunshineDot.SetResourceReference(Shape.FillProperty, ssReady ? "Ready" : "Warning");
-        RailRustDeskDot.SetResourceReference(Shape.FillProperty, rdReady ? "Ready" : "Warning");
         RailEasyTierDot.SetResourceReference(Shape.FillProperty, etReady ? "Ready" : "Warning");
 
         UpdateDeviceActionEngineReadiness();
@@ -382,9 +369,7 @@ public partial class MainWindow
         {
             var updated = kind switch
             {
-                EngineKind.Moonlight => settings with { MoonlightPath = dialog.FileName },
                 EngineKind.Sunshine => settings with { SunshinePath = dialog.FileName },
-                EngineKind.RustDesk => settings with { ClientPath = dialog.FileName },
                 EngineKind.EasyTier => settings with { EasyTierPath = dialog.FileName },
                 _ => settings,
             };
@@ -450,12 +435,8 @@ public partial class MainWindow
         {
             var updated = kind switch
             {
-                EngineKind.Moonlight when !string.IsNullOrEmpty(settings.MoonlightPath) && !File.Exists(settings.MoonlightPath)
-                    => settings with { MoonlightPath = null },
                 EngineKind.Sunshine when !string.IsNullOrEmpty(settings.SunshinePath) && !File.Exists(settings.SunshinePath)
                     => settings with { SunshinePath = null },
-                EngineKind.RustDesk when !string.IsNullOrEmpty(settings.ClientPath) && !File.Exists(settings.ClientPath)
-                    => settings with { ClientPath = null },
                 EngineKind.EasyTier when !string.IsNullOrEmpty(settings.EasyTierPath) && !File.Exists(settings.EasyTierPath)
                     => settings with { EasyTierPath = null },
                 _ => settings,

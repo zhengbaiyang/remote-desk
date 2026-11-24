@@ -1,0 +1,385 @@
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace RemoteDesk;
+
+internal static class Milestone3Checks
+{
+    public static IReadOnlyList<(string Name, Action Run)> CreateTests(string tempRoot) =>
+    [
+        ("DisplayResolutionPlanner picks exact, refresh, aspect-matched, and safe fallback modes", () =>
+        {
+            var current = new DisplayModeInfo(1920, 1080, 60);
+            IReadOnlyList<DisplayModeInfo> modes =
+            [
+                new(1280, 720, 60),
+                new(1920, 1080, 60),
+                new(1920, 1080, 120),
+                new(1920, 1080, 144),
+                new(2560, 1440, 60),
+                new(2560, 1440, 120),
+            ];
+
+            // Exact resolution picking closest >= refresh
+            Equal(new DisplayModeInfo(1920, 1080, 120), DisplayResolutionPlanner.SelectBestMode(1920, 1080, 90, current, modes));
+            // Exact resolution picking max refresh when target exceeds all
+            Equal(new DisplayModeInfo(1920, 1080, 144), DisplayResolutionPlanner.SelectBestMode(1920, 1080, 240, current, modes));
+            // 4K 16:9 unavailable -> closest 16:9 mode <= 3840 (2560x1440 @ 60)
+            Equal(new DisplayModeInfo(2560, 1440, 60), DisplayResolutionPlanner.SelectBestMode(3840, 2160, 60, current, modes));
+            // Unmatchable aspect ratio falls back safely to current
+            Equal(current, DisplayResolutionPlanner.SelectBestMode(1000, 3000, 60, current, modes));
+        }),
+
+        ("FileTransferPathHelper blocks traversal/reserved names and resolves unique collision paths", () =>
+        {
+            Throws<ArgumentException>(() => FileTransferPathHelper.SanitizeFileName("../secret.txt"));
+            Throws<ArgumentException>(() => FileTransferPathHelper.SanitizeFileName(@"folder\..\evil.txt"));
+            Throws<ArgumentException>(() => FileTransferPathHelper.SanitizeFileName("CON.txt"));
+            Throws<ArgumentException>(() => FileTransferPathHelper.SanitizeFileName("nul"));
+            Throws<ArgumentException>(() => FileTransferPathHelper.SanitizeFileName("  "));
+
+            Equal("report.pdf", FileTransferPathHelper.SanitizeFileName(@"C:\Users\alice\Desktop\report.pdf"));
+            Equal("a_b_c.txt", FileTransferPathHelper.SanitizeFileName("dir/a:b?c.txt"));
+
+            var dir = Path.Combine(tempRoot, "ft-unique-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var p0 = FileTransferPathHelper.ResolveUniqueTargetPath(dir, "doc.pdf");
+                Equal(Path.Combine(dir, "doc.pdf"), p0);
+                File.WriteAllText(p0, "0");
+
+                var p1 = FileTransferPathHelper.ResolveUniqueTargetPath(dir, "doc.pdf");
+                Equal(Path.Combine(dir, "doc (1).pdf"), p1);
+                File.WriteAllText(p1, "1");
+
+                var p2 = FileTransferPathHelper.ResolveUniqueTargetPath(dir, "doc.pdf");
+                Equal(Path.Combine(dir, "doc (2).pdf"), p2);
+            }
+            finally
+            {
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+        }),
+
+        ("AgentHmacAuth validates body-hash signatures and rejects tampering/replay", () =>
+        {
+            var verifier = new AgentHmacAuth();
+            var authKey = "test-shared-secret-key";
+            var sha = Convert.ToHexString(SHA256.HashData("payload-bytes"u8.ToArray())).ToLowerInvariant();
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var nonce = "nonce-12345678";
+
+            var sig = AgentHmacAuth.ComputeSignatureFromBodyHash(authKey, "POST", "/agent/v1/files/upload", now, nonce, sha);
+            Equal(true, verifier.VerifySignatureFromBodyHash(authKey, "POST", "/agent/v1/files/upload", now, nonce, sha, sig, now));
+            // Replay same nonce must fail
+            Equal(false, verifier.VerifySignatureFromBodyHash(authKey, "POST", "/agent/v1/files/upload", now, nonce, sha, sig, now));
+            // Tampered hash must fail
+            var badSha = new string('0', 64);
+            Equal(false, verifier.VerifySignatureFromBodyHash(authKey, "POST", "/agent/v1/files/upload", now, "nonce-22345678", badSha, sig, now));
+        }),
+
+        ("AgentPeerServer + AgentPeerClient execute clipboard, streaming upload, display, privacy, and power endpoints", () =>
+        {
+            const string authKey = "m3-peer-auth-key-64chars";
+            var root = Path.Combine(tempRoot, "m3-peer-" + Guid.NewGuid().ToString("N"));
+            var uploadDir = Path.Combine(root, "uploads");
+            Directory.CreateDirectory(root);
+
+            try
+            {
+                var currentClipboard = new AgentClipboardDto(0, "none", null, null, null);
+                var currentMode = new DisplayModeInfo(1920, 1080, 60);
+                DisplayModeInfo? originalMode = null;
+                var overrideActive = false;
+                var privacyOn = false;
+                string? lastPowerAction = null;
+
+                var handlers = new AgentPeerFeatureHandlers(
+                    GetClipboardAsync: _ => Task.FromResult(currentClipboard),
+                    SetClipboardAsync: (req, _) =>
+                    {
+                        var raw = req.Kind == "text"
+                            ? Encoding.UTF8.GetBytes(req.Text ?? "")
+                            : Convert.FromBase64String(req.ImageBase64 ?? "");
+                        var prefix = Encoding.ASCII.GetBytes(req.Kind + ":");
+                        var combined = new byte[prefix.Length + raw.Length];
+                        Buffer.BlockCopy(prefix, 0, combined, 0, prefix.Length);
+                        Buffer.BlockCopy(raw, 0, combined, prefix.Length, raw.Length);
+                        var sha = Convert.ToHexString(SHA256.HashData(combined)).ToLowerInvariant();
+                        currentClipboard = new AgentClipboardDto(currentClipboard.Sequence + 1, req.Kind, req.Text, req.ImageBase64, sha);
+                        return Task.FromResult(new AgentClipboardSetResponseDto(true, sha, null, "ok"));
+                    },
+                    ResolveUploadDirectoryAsync: _ => Task.FromResult(uploadDir),
+                    GetDisplayStateAsync: _ => Task.FromResult(new AgentDisplayStateDto(
+                        currentMode,
+                        [new DisplayModeInfo(1920, 1080, 60), new DisplayModeInfo(2560, 1440, 120)],
+                        overrideActive,
+                        originalMode)),
+                    ApplyDisplayModeAsync: (req, _) =>
+                    {
+                        originalMode ??= currentMode;
+                        currentMode = DisplayResolutionPlanner.SelectBestMode(
+                            req.Width,
+                            req.Height,
+                            req.RefreshRate,
+                            currentMode,
+                            [new DisplayModeInfo(1920, 1080, 60), new DisplayModeInfo(2560, 1440, 120)]);
+                        overrideActive = true;
+                        return Task.FromResult(new AgentDisplayApplyResultDto(true, true, currentMode, originalMode, null, "matched"));
+                    },
+                    RestoreDisplayModeAsync: _ =>
+                    {
+                        if (originalMode is not null)
+                            currentMode = originalMode;
+                        overrideActive = false;
+                        return Task.FromResult(new AgentDisplayApplyResultDto(true, true, currentMode, originalMode, null, "restored"));
+                    },
+                    SetPrivacyScreenAsync: (enabled, _) =>
+                    {
+                        privacyOn = enabled;
+                        return Task.FromResult(new AgentPrivacyResultDto(true, enabled, null, enabled ? "on" : "off"));
+                    },
+                    ExecutePowerActionAsync: (action, _) =>
+                    {
+                        lastPowerAction = action;
+                        return Task.FromResult(new AgentPowerResultDto(true, action, null, $"exec:{action}"));
+                    });
+
+                var state = new AgentPeerServerState("dev-m3", "TEST-HOST", true, 47989, authKey, false, null, null);
+                using var server = new AgentPeerServer(() => state, (_, _, _) => Task.FromResult((true, "ok")), handlers);
+                using var bridgeHandler = new PeerServerBridgeHandler(server);
+                using var client = new AgentPeerClient(bridgeHandler);
+
+                // 1. Clipboard text & image round-trip
+                var clipTextResp = client.SetClipboardAsync("10.126.126.5", 47999, authKey, new AgentClipboardSetRequestDto("text", "你好 RemoteDesk 2.0", null)).GetAwaiter().GetResult();
+                Equal(true, clipTextResp.Ok);
+                var (clipOk, gotClip, _) = client.GetClipboardAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+                Equal(true, clipOk);
+                Equal("text", gotClip?.Kind);
+                Equal("你好 RemoteDesk 2.0", gotClip?.Text);
+
+                var fakePng = Convert.ToBase64String([137, 80, 78, 71, 13, 10, 26, 10]);
+                Equal(true, client.SetClipboardAsync("10.126.126.5", 47999, authKey, new AgentClipboardSetRequestDto("image", null, fakePng)).GetAwaiter().GetResult().Ok);
+                var (_, gotImg, _) = client.GetClipboardAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+                Equal("image", gotImg?.Kind);
+                Equal(fakePng, gotImg?.ImageBase64);
+
+                // 2. Streaming file upload + collision rename
+                var localFile = Path.Combine(root, "sample.bin");
+                var payload = RandomNumberGenerator.GetBytes(256 * 1024);
+                File.WriteAllBytes(localFile, payload);
+                var up1 = client.UploadFileAsync("10.126.126.5", 47999, authKey, localFile).GetAwaiter().GetResult();
+                Equal(true, up1.Ok);
+                Equal("sample.bin", up1.FileName);
+                Equal((long)payload.Length, up1.SizeBytes);
+                Equal(true, File.Exists(up1.SavedPath!));
+
+                var up2 = client.UploadFileAsync("10.126.126.5", 47999, authKey, localFile).GetAwaiter().GetResult();
+                Equal(true, up2.Ok);
+                Equal("sample (1).bin", up2.FileName);
+
+                // Tampered upload body against declared hash must fail with 400 and leave zero .tmp files
+                var badSha = new string('a', 64);
+                var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                var nonce = "bad-upload-nonce-1";
+                var sig = AgentHmacAuth.ComputeSignatureFromBodyHash(authKey, "POST", "/agent/v1/files/upload", ts, nonce, badSha);
+                using (var httpClient = new HttpClient(bridgeHandler, disposeHandler: false))
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Post, "http://10.126.126.5:47999/agent/v1/files/upload")
+                    {
+                        Content = new ByteArrayContent("tampered-bytes"u8.ToArray()),
+                    };
+                    req.Headers.TryAddWithoutValidation(AgentHmacAuth.HeaderTimestamp, ts.ToString(CultureInfo.InvariantCulture));
+                    req.Headers.TryAddWithoutValidation(AgentHmacAuth.HeaderNonce, nonce);
+                    req.Headers.TryAddWithoutValidation(AgentHmacAuth.HeaderSignature, sig);
+                    req.Headers.TryAddWithoutValidation(AgentHmacAuth.HeaderFileName, Convert.ToBase64String("bad.bin"u8.ToArray()));
+                    req.Headers.TryAddWithoutValidation(AgentHmacAuth.HeaderFileSha256, badSha);
+                    using var badResp = httpClient.SendAsync(req).GetAwaiter().GetResult();
+                    Equal(HttpStatusCode.BadRequest, badResp.StatusCode);
+                }
+                Equal(0, Directory.GetFiles(uploadDir, "*.tmp").Length);
+
+                // 3. Display apply & restore
+                var applyRes = client.ApplyDisplayModeAsync("10.126.126.5", 47999, authKey, 2560, 1440, 120).GetAwaiter().GetResult();
+                Equal(true, applyRes.Ok);
+                Equal(2560, applyRes.Applied?.Width);
+                var (dispOk, dispState, _) = client.GetDisplayStateAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+                Equal(true, dispOk);
+                Equal(true, dispState?.OverrideActive);
+                var restoreRes = client.RestoreDisplayModeAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+                Equal(true, restoreRes.Ok);
+                Equal(1920, restoreRes.Applied?.Width);
+
+                // 4. Privacy curtain & Power actions
+                Equal(true, client.SetPrivacyScreenAsync("10.126.126.5", 47999, authKey, true).GetAwaiter().GetResult().Enabled);
+                Equal(true, privacyOn);
+                Equal(false, client.SetPrivacyScreenAsync("10.126.126.5", 47999, authKey, false).GetAwaiter().GetResult().Enabled);
+
+                Equal(true, client.ExecutePowerActionAsync("10.126.126.5", 47999, authKey, "lock").GetAwaiter().GetResult().Ok);
+                Equal("lock", lastPowerAction);
+                Equal(false, client.ExecutePowerActionAsync("10.126.126.5", 47999, authKey, "hibernate").GetAwaiter().GetResult().Ok);
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }),
+
+        ("SettingsStore migrates mixed v0.5/v0.6 devices cleanly without failing on RustDesk-only entries", () =>
+        {
+            var path = Path.Combine(tempRoot, "m3-migrate-" + Guid.NewGuid().ToString("N"), "settings.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, """
+                {
+                  "devices": [
+                    { "name": "OfficeOnly", "id": "123456789", "preferredMode": "Office" },
+                    { "name": "DormPC", "id": "987654321", "hostAddress": "10.126.126.2", "preferredMode": "Stream", "streamAppName": "Desktop" }
+                  ],
+                  "clientPath": "C:\\Tools\\rustdesk.exe",
+                  "moonlightPath": "C:\\Tools\\Moonlight.exe"
+                }
+                """);
+
+            var loaded = new SettingsStore(path).Load();
+            Equal(1, loaded.Devices.Count);
+            Equal("DormPC", loaded.Devices[0].Name);
+            Equal("10.126.126.2", loaded.Devices[0].HostAddress);
+            Equal(true, loaded.AutoMatchResolution);
+            Equal(true, loaded.AutoSyncClipboard);
+        }),
+
+        ("Repository uses GPL-3.0 license and EngineCatalog converges to Sunshine + EasyTier", () =>
+        {
+            Equal(2, EngineCatalog.All.Count);
+            Equal(true, EngineCatalog.All.Any(e => e.Kind == EngineKind.Sunshine));
+            Equal(true, EngineCatalog.All.Any(e => e.Kind == EngineKind.EasyTier));
+
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            string? licensePath = null;
+            while (dir is not null)
+            {
+                var candidate = Path.Combine(dir.FullName, "LICENSE");
+                if (File.Exists(candidate))
+                {
+                    licensePath = candidate;
+                    break;
+                }
+                dir = dir.Parent;
+            }
+
+            Equal(true, licensePath is not null);
+            var text = File.ReadAllText(licensePath!);
+            Equal(true, text.Contains("GNU GENERAL PUBLIC LICENSE", StringComparison.Ordinal));
+            Equal(true, text.Contains("Version 3", StringComparison.Ordinal));
+        }),
+    ];
+
+    private sealed class PeerServerBridgeHandler(AgentPeerServer server) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var bodyBytes = request.Content is null
+                ? []
+                : await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+
+            var sb = new StringBuilder();
+            sb.Append(request.Method.Method).Append(' ').Append(request.RequestUri!.PathAndQuery).Append(" HTTP/1.1\r\n");
+            sb.Append("Host: ").Append(request.RequestUri.Authority).Append("\r\n");
+            foreach (var header in request.Headers)
+                sb.Append(header.Key).Append(": ").Append(string.Join(", ", header.Value)).Append("\r\n");
+            if (request.Content is not null)
+            {
+                foreach (var header in request.Content.Headers)
+                    sb.Append(header.Key).Append(": ").Append(string.Join(", ", header.Value)).Append("\r\n");
+                sb.Append("Content-Length: ").Append(bodyBytes.Length.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            }
+            sb.Append("\r\n");
+
+            var reqHeaderBytes = Encoding.ASCII.GetBytes(sb.ToString());
+            using var reqStream = new MemoryStream(reqHeaderBytes.Length + bodyBytes.Length);
+            reqStream.Write(reqHeaderBytes, 0, reqHeaderBytes.Length);
+            reqStream.Write(bodyBytes, 0, bodyBytes.Length);
+            reqStream.Position = 0;
+
+            using var respStream = new MemoryStream();
+            using var split = new SplitStream(reqStream, respStream);
+            await server.HandleConnectionStreamAsync(split, cancellationToken).ConfigureAwait(false);
+
+            var rawResp = respStream.ToArray();
+            var sep = FindHeaderBodySeparator(rawResp);
+            var headText = Encoding.ASCII.GetString(rawResp, 0, sep);
+            var headLines = headText.Split("\r\n", StringSplitOptions.None);
+            var statusCode = (HttpStatusCode)int.Parse(headLines[0].Split(' ')[1], CultureInfo.InvariantCulture);
+
+            var bodyOffset = sep + 4;
+            var respBody = new byte[rawResp.Length - bodyOffset];
+            Buffer.BlockCopy(rawResp, bodyOffset, respBody, 0, respBody.Length);
+
+            return new HttpResponseMessage(statusCode)
+            {
+                Content = new ByteArrayContent(respBody),
+            };
+        }
+
+        private static int FindHeaderBodySeparator(byte[] data)
+        {
+            for (var i = 0; i <= data.Length - 4; i++)
+            {
+                if (data[i] == '\r' && data[i + 1] == '\n' && data[i + 2] == '\r' && data[i + 3] == '\n')
+                    return i;
+            }
+            throw new InvalidDataException("Missing HTTP header separator.");
+        }
+    }
+
+    private sealed class SplitStream(Stream input, Stream output) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => output.Flush();
+        public override Task FlushAsync(CancellationToken cancellationToken) => output.FlushAsync(cancellationToken);
+        public override int Read(byte[] buffer, int offset, int count) => input.Read(buffer, offset, count);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            input.ReadAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            input.ReadAsync(buffer, cancellationToken);
+        public override void Write(byte[] buffer, int offset, int count) => output.Write(buffer, offset, count);
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            output.WriteAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            output.WriteAsync(buffer, cancellationToken);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
+    private static void Equal<T>(T expected, T actual)
+    {
+        if (!EqualityComparer<T>.Default.Equals(expected, actual))
+            throw new InvalidOperationException($"Expected '{expected}', got '{actual}'.");
+    }
+
+    private static void Throws<T>(Action action) where T : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (T)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"Expected {typeof(T).Name}.");
+    }
+}

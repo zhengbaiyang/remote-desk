@@ -9,56 +9,52 @@ try
 {
     var tests = new (string Name, Action Run)[]
     {
-        ("normalizes device names and pasted IDs", () =>
+        ("normalizes device names and validates host addresses", () =>
         {
-            var device = DeviceProfile.Create("  家里的电脑  ", "123 456 789");
+            var device = DeviceProfile.Create("  家里的电脑  ", " 10.126.126.2 ");
             Equal("家里的电脑", device.Name);
-            Equal("123456789", device.Id);
-            Equal<string?>(null, device.HostAddress);
-            Equal(ConnectionMode.Office, device.PreferredMode);
+            Equal("10.126.126.2", device.HostAddress);
             Equal("Desktop", device.StreamAppName);
             Equal(StreamOptions.FromPreset(StreamPresetKind.High2K), device.Stream);
-            Equal("my_PC-2", DeviceProfile.Create("家里", "my_PC-2").Id);
+            Equal(true, device.SupportsStream);
         }),
         ("rejects an option-like target and shell syntax", () =>
         {
             Throws<ArgumentException>(() => DeviceProfile.Create("家里", "--relay"));
             Throws<ArgumentException>(() => DeviceProfile.Create("家里", "123 & calc"));
-            Throws<ArgumentException>(() => DeviceProfile.Create(" ", "123456789"));
+            Throws<ArgumentException>(() => DeviceProfile.Create(" ", "10.126.126.2"));
             Throws<ArgumentException>(() => DeviceProfile.Create("家里", "123\n456"));
         }),
-        ("migrates a legacy v0.4.1 device and persists settings cleanly", () =>
+        ("migrates legacy settings cleanly and persists AutoMatchResolution / AutoSyncClipboard", () =>
         {
             var path = Path.Combine(location, "prefs", "settings.json");
             var store = new SettingsStore(path);
             var initial = store.Load();
             Equal(0, initial.Devices.Count);
             Equal(true, initial.UseDarkTheme);
+            Equal(true, initial.AutoMatchResolution);
+            Equal(true, initial.AutoSyncClipboard);
 
-            var clientPath = Path.Combine(location, "RustDesk Portable", "rustdesk.exe");
+            // Legacy v0.4.1 JSON with only RustDesk ID must load cleanly with RustDesk-only entry dropped.
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(new
             {
                 device = new { name = "家里的电脑", id = "123456789" },
-                clientPath,
+                clientPath = @"C:\Old\rustdesk.exe",
                 useDarkTheme = true,
             }));
             var old = store.Load();
-            Equal(DeviceProfile.Create("家里的电脑", "123456789"), old.Devices.Single());
+            Equal(0, old.Devices.Count);
 
-            var expected = old with { Devices = [..old.Devices, DeviceProfile.Create("工位电脑", "111222333")] };
+            var d1 = DeviceProfile.Create("家里的电脑", "192.168.1.50");
+            var d2 = DeviceProfile.Create("工位电脑", "10.126.126.3");
+            var expected = old with { Devices = [d1, d2], AutoMatchResolution = false, AutoSyncClipboard = false };
             store.Save(expected);
             var loaded = new SettingsStore(path).Load();
             Equal(true, loaded.Devices.SequenceEqual(expected.Devices));
-            Equal(clientPath, loaded.ClientPath);
+            Equal(false, loaded.AutoMatchResolution);
+            Equal(false, loaded.AutoSyncClipboard);
             Equal(true, loaded.UseDarkTheme);
-
-            using var json = JsonDocument.Parse(File.ReadAllText(path));
-            Equal(false, json.RootElement.TryGetProperty("device", out _));
-            Equal(3, json.RootElement.EnumerateObject().Count()); // devices, clientPath, useDarkTheme
-            var secondDevice = json.RootElement.GetProperty("devices")[1];
-            Equal(5, secondDevice.EnumerateObject().Count()); // name, id, preferredMode, stream, streamAppName
-            Equal(false, secondDevice.TryGetProperty("hostAddress", out _));
 
             // Explicit light theme (false) must persist and reload as false (not revert to default true).
             store.Save(loaded with { Devices = [], UseDarkTheme = false });
@@ -69,40 +65,39 @@ try
             Equal(0, reloadedLight.Devices.Count);
             Equal(false, reloadedLight.UseDarkTheme);
         }),
-        ("persists extended Phase 1 AppSettings fields and validates DefaultStream", () =>
+        ("persists extended v2 AppSettings fields and validates DefaultStream", () =>
         {
             var path = Path.Combine(location, "prefs-v2", "settings.json");
             var store = new SettingsStore(path);
             var customStream = StreamOptions.Create(StreamPresetKind.Custom, 3840, 2160, 120, 80, VideoCodecPreference.Av1, false);
             var device = DeviceProfile.Create(
                 "宿舍主力机",
-                "987 654 321",
                 "10.12.34.56",
-                ConnectionMode.Stream,
                 StreamOptions.FromPreset(StreamPresetKind.Ultra120),
                 "Steam Big Picture");
 
             var saved = new AppSettings
             {
                 Devices = [device],
-                ClientPath = @"C:\Tools\rustdesk.exe",
-                MoonlightPath = @"C:\Tools\Moonlight.exe",
                 SunshinePath = @"C:\Tools\sunshine.exe",
                 DownloadMirrorPrefix = "https://gh-proxy.example/",
                 UseDarkTheme = false,
                 HostModeEnabled = true,
                 DefaultStream = customStream,
+                AutoMatchResolution = true,
+                AutoSyncClipboard = false,
             };
             store.Save(saved);
 
             var loaded = new SettingsStore(path).Load();
             Equal(device, loaded.Devices.Single());
-            Equal(@"C:\Tools\Moonlight.exe", loaded.MoonlightPath);
             Equal(@"C:\Tools\sunshine.exe", loaded.SunshinePath);
             Equal("https://gh-proxy.example/", loaded.DownloadMirrorPrefix);
             Equal(false, loaded.UseDarkTheme);
             Equal(true, loaded.HostModeEnabled);
             Equal(customStream, loaded.DefaultStream);
+            Equal(true, loaded.AutoMatchResolution);
+            Equal(false, loaded.AutoSyncClipboard);
 
             // Invalid DefaultStream on disk is rejected on load.
             File.WriteAllText(path, """{"defaultStream":{"preset":"Custom","width":100,"height":1080,"fps":60,"bitrateMbps":20,"codec":"H265","hardwareDecoding":true}}""");
@@ -168,26 +163,21 @@ try
             Equal(240, clamped.Fps);
             Equal(2, clamped.BitrateMbps);
         }),
-        ("supports dual-mode DeviceProfile and rejects HostAddress / StreamAppName injection", () =>
+        ("validates DeviceProfile and rejects HostAddress / StreamAppName injection", () =>
         {
-            // Moonlight-only (no RustDesk ID) with IPv4, IPv6, and DNS hostname.
-            var ipv4 = DeviceProfile.Create("实验室主机", null, "192.168.31.88", ConnectionMode.Stream);
-            Equal<string?>(null, ipv4.Id);
+            var ipv4 = DeviceProfile.Create("实验室主机", "192.168.31.88");
             Equal("192.168.31.88", ipv4.HostAddress);
-            Equal(ConnectionMode.Stream, ipv4.PreferredMode);
             Equal(true, ipv4.SupportsStream);
-            Equal(true, ipv4.SupportsOffice);
 
-            var ipv6 = DeviceProfile.Create("校园网 IPv6", null, "2001:da8:201::1", ConnectionMode.Stream);
+            var ipv6 = DeviceProfile.Create("校园网 IPv6", "2001:da8:201::1");
             Equal("2001:da8:201::1", ipv6.HostAddress);
 
-            var dns = DeviceProfile.Create("宿舍主机", "123 456 789", "dorm-pc.campus.edu.cn", ConnectionMode.Stream, StreamOptions.FromPreset(StreamPresetKind.Ultra120), "Desktop");
-            Equal("123456789", dns.Id);
+            var dns = DeviceProfile.Create("宿舍主机", "dorm-pc.campus.edu.cn", StreamOptions.FromPreset(StreamPresetKind.Ultra120), "Desktop");
             Equal("dorm-pc.campus.edu.cn", dns.HostAddress);
 
-            // At least one of Id or HostAddress is required.
-            Throws<ArgumentException>(() => DeviceProfile.Create("空设备", null, null, ConnectionMode.Stream));
-            Throws<ArgumentException>(() => DeviceProfile.Create("空设备", "   ", "   ", ConnectionMode.Office));
+            // Empty or invalid hostAddress must be rejected.
+            Throws<ArgumentException>(() => DeviceProfile.Create("空设备", null!));
+            Throws<ArgumentException>(() => DeviceProfile.Create("空设备", "   "));
 
             // HostAddress injection vectors must all be rejected.
             string[] badHosts =
@@ -218,147 +208,20 @@ try
             ];
             foreach (var badHost in badHosts)
             {
-                Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, badHost, ConnectionMode.Stream));
+                Throws<ArgumentException>(() => DeviceProfile.Create("测试", badHost));
             }
 
             // StreamAppName validation.
-            Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, "10.0.0.1", ConnectionMode.Stream, null, ""));
-            Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, "10.0.0.1", ConnectionMode.Stream, null, "   "));
-            Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, "10.0.0.1", ConnectionMode.Stream, null, new string('A', 65)));
-            Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, "10.0.0.1", ConnectionMode.Stream, null, "Desktop\n--fps"));
-            Throws<ArgumentException>(() => DeviceProfile.Create("测试", null, "10.0.0.1", ConnectionMode.Stream, null, "--fps"));
+            Throws<ArgumentException>(() => DeviceProfile.Create("测试", "10.0.0.1", null, ""));
+            Throws<ArgumentException>(() => DeviceProfile.Create("测试", "10.0.0.1", null, "   "));
+            Throws<ArgumentException>(() => DeviceProfile.Create("测试", "10.0.0.1", null, new string('A', 65)));
+            Throws<ArgumentException>(() => DeviceProfile.Create("测试", "10.0.0.1", null, "Desktop\n--fps"));
+            Throws<ArgumentException>(() => DeviceProfile.Create("测试", "10.0.0.1", null, "--fps"));
         }),
-        ("passes a single device ID or HostAddress fallback to RustDesk and starts host cleanly", () =>
-        {
-            var path = Path.Combine(location, "RustDesk Portable", "rustdesk.exe");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllBytes(path, []);
-
-            var idStart = RustDeskClient.CreateConnection(path, DeviceProfile.Create("家里的电脑", "123456789"));
-            Equal(path, idStart.FileName);
-            Equal("--connect|123456789", string.Join('|', idStart.ArgumentList));
-            Equal(false, idStart.UseShellExecute);
-
-            var hostFallbackDevice = DeviceProfile.Create("局域网电脑", null, "192.168.1.20", ConnectionMode.Office);
-            var hostStart = RustDeskClient.CreateConnection(path, hostFallbackDevice);
-            Equal("--connect|192.168.1.20", string.Join('|', hostStart.ArgumentList));
-            Equal(false, hostStart.UseShellExecute);
-
-            var localHost = RustDeskClient.CreateHostStart(path);
-            Equal(path, localHost.FileName);
-            Equal(0, localHost.ArgumentList.Count);
-            Equal(false, localHost.UseShellExecute);
-        }),
-        ("enforces selectedPath over managedPath precedence in RustDeskClient and MoonlightClient", () =>
-        {
-            var selectedRustDesk = Path.Combine(location, "selected", "rustdesk.exe");
-            var managedRustDesk = Path.Combine(location, "managed", "rustdesk.exe");
-            var selectedMoonlight = Path.Combine(location, "selected", "Moonlight.exe");
-            var managedMoonlight = Path.Combine(location, "managed", "Moonlight.exe");
-            Directory.CreateDirectory(Path.GetDirectoryName(selectedRustDesk)!);
-            Directory.CreateDirectory(Path.GetDirectoryName(managedRustDesk)!);
-            File.WriteAllBytes(selectedRustDesk, []);
-            File.WriteAllBytes(managedRustDesk, []);
-            File.WriteAllBytes(selectedMoonlight, []);
-            File.WriteAllBytes(managedMoonlight, []);
-
-            Equal(selectedRustDesk, RustDeskClient.FindExecutable(selectedRustDesk, managedRustDesk));
-            Equal(managedRustDesk, RustDeskClient.FindExecutable(null, managedRustDesk));
-            Equal(managedRustDesk, RustDeskClient.FindExecutable(Path.Combine(location, "missing.exe"), managedRustDesk));
-
-            Equal(selectedMoonlight, MoonlightClient.FindExecutable(selectedMoonlight, managedMoonlight));
-            Equal(managedMoonlight, MoonlightClient.FindExecutable(null, managedMoonlight));
-            Equal(managedMoonlight, MoonlightClient.FindExecutable(Path.Combine(location, "missing-ml.exe"), managedMoonlight));
-        }),
-        ("builds safe MoonlightClient stream and pair ArgumentLists", () =>
-        {
-            var exe = Path.Combine(location, "Moonlight Portable", "Moonlight.exe");
-            Directory.CreateDirectory(Path.GetDirectoryName(exe)!);
-            File.WriteAllBytes(exe, []);
-
-            var device = DeviceProfile.Create(
-                "宿舍主力机",
-                null,
-                "10.20.30.40",
-                ConnectionMode.Stream,
-                StreamOptions.FromPreset(StreamPresetKind.Ultra120),
-                "Desktop");
-
-            var streamInfo = MoonlightClient.CreateStreamConnection(exe, device);
-            Equal(exe, streamInfo.FileName);
-            Equal(false, streamInfo.UseShellExecute);
-            Equal(
-                "stream|10.20.30.40|Desktop|--resolution|1920x1080|--fps|120|--bitrate|45000|--video-codec|HEVC|--video-decoder|hardware",
-                string.Join('|', streamInfo.ArgumentList));
-
-            var overrideOpts = StreamOptions.Create(StreamPresetKind.Custom, 2560, 1440, 90, 28, VideoCodecPreference.Av1, false);
-            var overrideInfo = MoonlightClient.CreateStreamConnection(exe, device, overrideOpts);
-            Equal(
-                "stream|10.20.30.40|Desktop|--resolution|2560x1440|--fps|90|--bitrate|28000|--video-codec|AV1|--video-decoder|software",
-                string.Join('|', overrideInfo.ArgumentList));
-
-            var h264Opts = StreamOptions.FromPreset(StreamPresetKind.Saver);
-            Equal("H.264", MoonlightClient.CreateStreamConnection(exe, device, h264Opts).ArgumentList[10]);
-
-            var autoOpts = h264Opts with { Codec = VideoCodecPreference.Auto };
-            Equal("auto", MoonlightClient.CreateStreamConnection(exe, device, autoOpts).ArgumentList[10]);
-
-            var pairInfo = MoonlightClient.CreatePairConnection(exe, "2001:da8:201::1");
-            Equal(exe, pairInfo.FileName);
-            Equal(false, pairInfo.UseShellExecute);
-            Equal("pair|2001:da8:201::1", string.Join('|', pairInfo.ArgumentList));
-
-            // Missing host or bad executable must fail.
-            var idOnlyDevice = DeviceProfile.Create("仅办公电脑", "123456789");
-            Throws<ArgumentException>(() => MoonlightClient.CreateStreamConnection(exe, idOnlyDevice));
-            Throws<FileNotFoundException>(() => MoonlightClient.CreateStreamConnection(Path.Combine(location, "missing.exe"), device));
-            Throws<ArgumentException>(() => MoonlightClient.CreatePairConnection(exe, "10.0.0.1 & calc"));
-            Throws<FileNotFoundException>(() => MoonlightClient.CreatePairConnection(Path.Combine(location, "missing.exe"), "10.0.0.1"));
-        }),
-        ("refuses to construct a command for a missing client", () =>
+        ("refuses to construct a command for a missing host binary", () =>
         {
             var path = Path.Combine(location, "missing.exe");
-            Throws<FileNotFoundException>(() => RustDeskClient.CreateConnection(path, DeviceProfile.Create("家里的电脑", "123456789")));
-            Throws<FileNotFoundException>(() => RustDeskClient.CreateHostStart(path));
             Throws<FileNotFoundException>(() => HostServiceManager.CreateSunshineHostStart(path));
-        }),
-        ("discovers RustDesk and Moonlight from custom install records and quoted service commands", () =>
-        {
-            if (!OperatingSystem.IsWindows()) return;
-            var folder = Path.Combine(location, "Custom Applications");
-            Directory.CreateDirectory(folder);
-            var rustDeskExe = Path.Combine(folder, "rustdesk.exe");
-            var moonlightExe = Path.Combine(folder, "Moonlight.exe");
-            File.WriteAllBytes(rustDeskExe, []);
-            File.WriteAllBytes(moonlightExe, []);
-
-            var keyName = @"Software\RemoteDesk-Discovery-Test-" + Guid.NewGuid().ToString("N");
-            using var root = Registry.CurrentUser.CreateSubKey(keyName);
-            try
-            {
-                using var msi = root.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{test-install}");
-                msi.SetValue("DisplayName", "RustDesk");
-                msi.SetValue("InstallLocation", folder);
-                Equal(rustDeskExe, RustDeskClient.FindRegisteredClient(root));
-                msi.DeleteValue("InstallLocation");
-                msi.SetValue("DisplayIcon", $"\"{rustDeskExe}\",0");
-                Equal(rustDeskExe, RustDeskClient.FindRegisteredClient(root));
-                msi.DeleteValue("DisplayIcon");
-                using var service = root.CreateSubKey(@"SYSTEM\CurrentControlSet\Services\RustDesk");
-                service.SetValue("ImagePath", $"\"{rustDeskExe}\" --service");
-                Equal(rustDeskExe, RustDeskClient.FindRegisteredClient(root));
-                service.SetValue("ImagePath", rustDeskExe + ".bak");
-                Equal<string?>(null, RustDeskClient.FindRegisteredClient(root));
-
-                using var mlEntry = root.CreateSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Moonlight Game Streaming");
-                mlEntry.SetValue("DisplayName", "Moonlight Game Streaming");
-                mlEntry.SetValue("InstallLocation", folder);
-                Equal(moonlightExe, MoonlightClient.FindRegisteredClient(root));
-                mlEntry.DeleteValue("InstallLocation");
-                mlEntry.SetValue("DisplayIcon", $"\"{moonlightExe}\",0");
-                Equal(moonlightExe, MoonlightClient.FindRegisteredClient(root));
-            }
-            finally { Registry.CurrentUser.DeleteSubKeyTree(keyName); }
         }),
         ("inspects local network info, filters loopback/APIPA/link-local, classifies GPUs, and inspects host status", () =>
         {
@@ -398,11 +261,9 @@ try
 
             var fakeSunshine = Path.Combine(location, "sunshine.exe");
             File.WriteAllBytes(fakeSunshine, []);
-            var status = HostServiceManager.GetHostStatus(fakeSunshine, Path.Combine(location, "missing-rd.exe"));
+            var status = HostServiceManager.GetHostStatus(fakeSunshine);
             Equal(true, status.SunshineInstalled);
             Equal(fakeSunshine, status.SunshineExecutablePath);
-            Equal(false, status.RustDeskInstalled);
-            Equal<string?>(null, status.RustDeskExecutablePath);
 
             var sunshineStart = HostServiceManager.CreateSunshineHostStart(fakeSunshine);
             Equal(fakeSunshine, sunshineStart.FileName);
@@ -454,7 +315,10 @@ try
     var allTests = tests
         .Concat(EngineChecks.CreateTests(location))
         .Concat(EasyTierChecks.CreateTests(location))
-        .Concat(UpdateChecks.CreateTests(location));
+        .Concat(UpdateChecks.CreateTests(location))
+        .Concat(Milestone1Checks.CreateTests(location))
+        .Concat(Milestone2Checks.CreateTests(location))
+        .Concat(Milestone3Checks.CreateTests(location));
 
     var failed = 0;
     foreach (var (name, run) in allTests)

@@ -242,4 +242,6 @@ internal sealed record EasyTierStatus(
     string? NetworkName,
     string? PeerUrl,
     IReadOnlyList<EasyTierPeerInfo> Peers,
-    string? DetailMessage = null);
+    string? DetailMessage = null,
+    bool NeedsElevationWarning = false,
+    bool ManagedByService = false);

@@ -10,6 +10,8 @@ namespace RemoteDesk;
 
 public partial class MainWindow
 {
+    private bool isSyncingSecurityPinToggle;
+
     private void RefreshHostAndNetworkInfo()
     {
         RefreshHostStatus();
@@ -23,7 +25,7 @@ public partial class MainWindow
         ShowStatus("已刷新本机被控服务、网卡与显卡编码状态。");
     }
 
-    private void HostModeToggled(object sender, RoutedEventArgs e)
+    private async void HostModeToggled(object sender, RoutedEventArgs e)
     {
         if (isSyncingHostToggle)
             return;
@@ -35,23 +37,96 @@ public partial class MainWindow
             SaveSettings(settings with { HostModeEnabled = enabled });
             UpdateHostNavIndicator();
 
+            await PushConfigToDaemonIfRunningAsync();
             if (enabled)
             {
                 var sunshineExe = ResolveSunshineExecutable();
                 if (sunshineExe is not null)
-                    ShowStatus("已开启本机被控模式，可点击下方按钮启动 Sunshine 或 RustDesk 服务。");
+                {
+                    if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                        await AgentIpcClient.StartSunshineAsync();
+                    ShowStatus("已开启本机被控模式，已由后台托管 Sunshine（支持同账号自动静默配对）。");
+                }
                 else
-                    ShowStatus("已开启本机被控模式。检测到 Sunshine 尚未安装，建议前往「引擎与设置」一键安装。", warning: true);
+                {
+                    ShowStatus("已开启本机被控模式。正在准备后台安装 Sunshine 或请前往「引擎与设置」安装。", warning: true);
+                    _ = EnsureRequiredEnginesSilentlyAsync();
+                }
             }
             else
             {
                 ShowStatus("已关闭本机被控开关（如需停止运行中的 Sunshine，请点击「停止 Sunshine」）。");
             }
+
+            RefreshHostStatus();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             ShowStatus("无法保存本机被控状态，请检查本机用户目录写入权限。", warning: true);
             RefreshHostStatus();
+        }
+    }
+
+    private async void HostSecurityPinToggled(object sender, RoutedEventArgs e)
+    {
+        if (isSyncingSecurityPinToggle)
+            return;
+
+        var required = HostSecurityPinToggle.IsChecked == true;
+        HostSecurityPinToggle.Content = required ? "已开启" : "已关闭";
+        HostSecurityPinEditRow.Visibility = required ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!required)
+        {
+            SaveSettings(settings with
+            {
+                SecurityPinRequired = false,
+                SecurityPinSalt = null,
+                SecurityPinHash = null,
+            });
+            HostSecurityPinInput.Password = "";
+
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                await AgentIpcClient.SetSecurityPinAsync(required: false, newPin: null);
+
+            _ = SyncWithServerAndApplyAsync(userInitiated: false);
+            ShowStatus("已关闭独立安全密码验证（恢复同账号设备免确认自动配对直连）。");
+        }
+        else
+        {
+            HostSecurityPinInput.Focus();
+            ShowStatus("请输入 4 位及以上独立安全密码并点击「保存安全密码」。");
+        }
+    }
+
+    private async void SaveHostSecurityPinClicked(object sender, RoutedEventArgs e)
+    {
+        var pin = HostSecurityPinInput.Password;
+        try
+        {
+            var (salt, hash) = SecurityPinHasher.HashPin(pin);
+            SaveSettings(settings with
+            {
+                SecurityPinRequired = true,
+                SecurityPinSalt = salt,
+                SecurityPinHash = hash,
+            });
+
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                await AgentIpcClient.SetSecurityPinAsync(required: true, newPin: pin);
+
+            HostSecurityPinInput.Password = "";
+            _ = SyncWithServerAndApplyAsync(userInitiated: false);
+            ShowStatus("已保存独立被控安全密码，新设备首次自动配对本机时需校验此密码。");
+        }
+        catch (ArgumentException ex)
+        {
+            ShowStatus(ex.Message, warning: true);
+            HostSecurityPinInput.Focus();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowStatus($"无法保存安全密码：{ex.Message}", warning: true);
         }
     }
 
@@ -68,9 +143,22 @@ public partial class MainWindow
             isSyncingHostToggle = false;
         }
 
+        isSyncingSecurityPinToggle = true;
+        try
+        {
+            HostSecurityPinToggle.IsChecked = settings.SecurityPinRequired;
+            HostSecurityPinToggle.Content = settings.SecurityPinRequired ? "已开启" : "已关闭";
+            HostSecurityPinEditRow.Visibility = settings.SecurityPinRequired ? Visibility.Visible : Visibility.Collapsed;
+        }
+        finally
+        {
+            isSyncingSecurityPinToggle = false;
+        }
+
+        RefreshDaemonServiceUi();
+
         var sunshineExe = ResolveSunshineExecutable();
-        var rustDeskExe = ResolveRustDeskExecutable();
-        var status = HostServiceManager.GetHostStatus(sunshineExe, rustDeskExe);
+        var status = HostServiceManager.GetHostStatus(sunshineExe);
 
         // Sunshine status badge
         if (status.SunshineRunning)
@@ -89,29 +177,24 @@ public partial class MainWindow
             HostSunshinePathText.Text = "未检测到 Sunshine，请前往引擎中心一键安装。";
         }
 
-        // RustDesk status badge
-        if (status.RustDeskRunning)
+        var bridgeReady = sessionBridgeServer?.IsListening == true ||
+                          (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running);
+        if (bridgeReady)
         {
-            SetHostBadge(HostRustDeskBadge, HostRustDeskBadgeText, "运行中", "ReadySoft", "Ready");
-            HostRustDeskPathText.Text = status.RustDeskExecutablePath ?? "RustDesk 进程正在运行";
-        }
-        else if (status.RustDeskInstalled)
-        {
-            SetHostBadge(HostRustDeskBadge, HostRustDeskBadgeText, "已安装 · 未运行", "WarningSoft", "Warning");
-            HostRustDeskPathText.Text = status.RustDeskExecutablePath ?? "";
+            SetHostBadge(HostBridgeBadge, HostBridgeBadgeText, "协同就绪", "ReadySoft", "Ready");
+            HostBridgeDetailText.Text = "支持双向剪贴板、拖拽收文件、分辨率自动匹配、WDA 防窥黑屏与远程锁屏/电源控制。";
         }
         else
         {
-            SetHostBadge(HostRustDeskBadge, HostRustDeskBadgeText, "未安装", "SurfaceSubtle", "Muted");
-            HostRustDeskPathText.Text = "未检测到 RustDesk，请前往引擎中心一键安装。";
+            SetHostBadge(HostBridgeBadge, HostBridgeBadgeText, "待启动", "WarningSoft", "Warning");
+            HostBridgeDetailText.Text = "桌面交互通道未就绪，请启用后台守护服务或保持主窗口运行。";
         }
 
         StartSunshineButton.IsEnabled = status.SunshineInstalled && !status.SunshineRunning;
         StopSunshineButton.IsEnabled = status.SunshineRunning;
         OpenSunshineUiButton.IsEnabled = status.SunshineInstalled || status.SunshineRunning;
-        StartRustDeskHostButton.IsEnabled = status.RustDeskInstalled;
 
-        UpdateHostNavIndicator(status.SunshineRunning || status.RustDeskRunning);
+        UpdateHostNavIndicator(status.SunshineRunning);
     }
 
     private void UpdateHostNavIndicator(bool? anyHostRunning = null)
@@ -150,7 +233,7 @@ public partial class MainWindow
         GpuEncodersEmpty.Visibility = gpus.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void StartSunshineClicked(object sender, RoutedEventArgs e)
+    private async void StartSunshineClicked(object sender, RoutedEventArgs e)
     {
         var sunshineExe = ResolveSunshineExecutable();
         if (sunshineExe is null)
@@ -162,13 +245,24 @@ public partial class MainWindow
 
         try
         {
-            var started = HostServiceManager.StartSunshineHost(sunshineExe);
             if (!settings.HostModeEnabled)
                 SaveSettings(settings with { HostModeEnabled = true });
 
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+            {
+                await PushConfigToDaemonIfRunningAsync();
+                var (ok, _, err) = await AgentIpcClient.StartSunshineAsync();
+                RefreshHostStatus();
+                ShowStatus(ok
+                    ? "后台守护服务已启动 Sunshine 并开启同账号零配置自动配对。"
+                    : (err ?? "守护服务启动 Sunshine 失败。"), warning: !ok);
+                return;
+            }
+
+            var started = HostServiceManager.StartSunshineHost(sunshineExe);
             RefreshHostStatus();
             ShowStatus(started
-                ? "已启动 Sunshine 高刷被控端，可点击「打开 Sunshine 面板」完成首次配对。"
+                ? "已启动 Sunshine 高刷被控端（建议同时启用「后台守护服务」实现同账号零配置自动配对）。"
                 : "Sunshine 进程未能启动，请检查安装目录。", warning: !started);
         }
         catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException)
@@ -177,10 +271,18 @@ public partial class MainWindow
         }
     }
 
-    private void StopSunshineClicked(object sender, RoutedEventArgs e)
+    private async void StopSunshineClicked(object sender, RoutedEventArgs e)
     {
         try
         {
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+            {
+                var (ok, _, err) = await AgentIpcClient.StopSunshineAsync();
+                RefreshHostStatus();
+                ShowStatus(ok ? "后台守护服务已停止 Sunshine 被控进程。" : (err ?? "停止 Sunshine 失败。"), warning: !ok);
+                return;
+            }
+
             var stopped = HostServiceManager.StopSunshineHost();
             RefreshHostStatus();
             ShowStatus(stopped
@@ -206,31 +308,6 @@ public partial class MainWindow
         catch (Win32Exception)
         {
             ShowStatus($"无法打开浏览器，请手动访问 {HostServiceManager.GetSunshineWebUiUrl()}。", warning: true);
-        }
-    }
-
-    private void StartRustDeskHostClicked(object sender, RoutedEventArgs e)
-    {
-        var rustDeskExe = ResolveRustDeskExecutable();
-        if (rustDeskExe is null)
-        {
-            NavigateTo(AppPage.Engines);
-            ShowStatus("未找到 RustDesk 程序，请先在引擎中心一键安装或指定路径。", warning: true);
-            return;
-        }
-
-        try
-        {
-            HostServiceManager.StartRustDeskHost(rustDeskExe);
-            if (!settings.HostModeEnabled)
-                SaveSettings(settings with { HostModeEnabled = true });
-
-            RefreshHostStatus();
-            ShowStatus("已启动 RustDesk 客户端，可在 RustDesk 主界面查看本机设备 ID 与一次性密码。");
-        }
-        catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException)
-        {
-            ShowStatus($"启动 RustDesk 失败：{error.Message}", warning: true);
         }
     }
 

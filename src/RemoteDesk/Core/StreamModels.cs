@@ -3,13 +3,6 @@ using System.Text.Json.Serialization;
 namespace RemoteDesk;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-internal enum ConnectionMode
-{
-    Stream,
-    Office,
-}
-
-[JsonConverter(typeof(JsonStringEnumConverter))]
 internal enum StreamPresetKind
 {
     Ultra120,

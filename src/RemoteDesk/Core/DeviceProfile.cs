@@ -8,17 +8,10 @@ internal sealed record DeviceProfile
 {
     public const string DefaultStreamAppName = "Desktop";
 
-    public DeviceProfile(string name, string id)
-        : this(name, RequireId(id), null, ConnectionMode.Office, null, null)
-    {
-    }
-
     [JsonConstructor]
     public DeviceProfile(
         string name,
-        string? id = null,
-        string? hostAddress = null,
-        ConnectionMode preferredMode = ConnectionMode.Office,
+        string hostAddress,
         StreamOptions? stream = null,
         string? streamAppName = null)
     {
@@ -28,34 +21,19 @@ internal sealed record DeviceProfile
         if (name.Length is < 1 or > 40 || name.Any(char.IsControl))
             throw new ArgumentException("请输入 1 到 40 个字符的电脑名称。", nameof(name));
 
-        var normalizedId = NormalizeOptionalId(id);
-        var normalizedHost = NormalizeOptionalHostAddress(hostAddress);
-        if (normalizedId is null && normalizedHost is null)
-            throw new ArgumentException("请至少填写 RustDesk 设备 ID 或目标主机地址。", nameof(id));
-
-        if (!Enum.IsDefined(preferredMode))
-            throw new ArgumentOutOfRangeException(nameof(preferredMode), preferredMode, "不支持的连接模式。");
-
+        var normalizedHost = ValidateHostAddress(hostAddress, nameof(hostAddress));
         var normalizedStream = (stream ?? StreamOptions.FromPreset(StreamPresetKind.High2K)).Validate();
         var normalizedAppName = NormalizeStreamAppName(streamAppName);
 
         Name = name;
-        Id = normalizedId;
         HostAddress = normalizedHost;
-        PreferredMode = preferredMode;
         Stream = normalizedStream;
         StreamAppName = normalizedAppName;
     }
 
     public string Name { get; }
 
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Id { get; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? HostAddress { get; }
-
-    public ConnectionMode PreferredMode { get; }
+    public string HostAddress { get; }
 
     public StreamOptions Stream { get; }
 
@@ -64,19 +42,12 @@ internal sealed record DeviceProfile
     [JsonIgnore]
     public bool SupportsStream => !string.IsNullOrEmpty(HostAddress);
 
-    [JsonIgnore]
-    public bool SupportsOffice => !string.IsNullOrEmpty(Id) || !string.IsNullOrEmpty(HostAddress);
-
-    public static DeviceProfile Create(string name, string id) => new(name, id);
-
     public static DeviceProfile Create(
         string name,
-        string? id,
-        string? hostAddress,
-        ConnectionMode preferredMode,
+        string hostAddress,
         StreamOptions? stream = null,
         string? streamAppName = null) =>
-        new(name, id, hostAddress, preferredMode, stream, streamAppName);
+        new(name, hostAddress, stream, streamAppName);
 
     internal static string ValidateHostAddress(string? hostAddress, string paramName = "hostAddress")
     {
@@ -112,50 +83,6 @@ internal sealed record DeviceProfile
             throw new ArgumentException("串流应用名称需为 1 到 64 个字符，且不能以连字符开头。", paramName);
 
         return trimmed;
-    }
-
-    private static string RequireId(string id)
-    {
-        ArgumentNullException.ThrowIfNull(id);
-        if (string.IsNullOrWhiteSpace(id))
-            throw new ArgumentException("请输入目标电脑在 RustDesk 中显示的设备 ID。", nameof(id));
-        return id;
-    }
-
-    private static string? NormalizeOptionalId(string? id)
-    {
-        if (id is null)
-            return null;
-
-        if (id.Any(char.IsControl))
-            throw new ArgumentException("请输入目标电脑在 RustDesk 中显示的设备 ID。", nameof(id));
-
-        if (string.IsNullOrWhiteSpace(id))
-            return null;
-
-        id = id.Trim();
-        if (id.All(c => char.IsAsciiDigit(c) || c == ' '))
-            id = string.Concat(id.Where(char.IsAsciiDigit));
-
-        if (id.Length is < 3 or > 32 || !char.IsAsciiLetterOrDigit(id[0]) ||
-            id.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('_' or '-')))
-            throw new ArgumentException("请输入目标电脑在 RustDesk 中显示的设备 ID。", nameof(id));
-
-        return id;
-    }
-
-    private static string? NormalizeOptionalHostAddress(string? hostAddress)
-    {
-        if (hostAddress is null)
-            return null;
-
-        if (hostAddress.Any(char.IsControl))
-            throw new ArgumentException("主机地址不能包含控制字符。", nameof(hostAddress));
-
-        if (string.IsNullOrWhiteSpace(hostAddress))
-            return null;
-
-        return ValidateHostAddress(hostAddress, nameof(hostAddress));
     }
 
     private static bool IsValidIPv4(string value)

@@ -2,26 +2,12 @@ namespace RemoteDesk;
 
 internal static class EngineCatalog
 {
-    private static readonly EngineDescriptor MoonlightDescriptor = new(
-        Kind: EngineKind.Moonlight,
-        Id: "moonlight",
-        DisplayName: "Moonlight",
-        RoleTag: "高刷控制端",
-        Description: "高帧率低延迟串流控制端，支持 120fps 与硬件解码，适合校园网/局域网丝滑操控。",
-        License: "GPL-3.0",
-        HomepageUrl: "https://github.com/moonlight-stream/moonlight-qt",
-        ReleasesApiUrl: "https://api.github.com/repos/moonlight-stream/moonlight-qt/releases/latest",
-        ReleasesPageUrl: "https://github.com/moonlight-stream/moonlight-qt/releases/latest",
-        ExecutableName: "Moonlight.exe",
-        PreferredAssetKeywords: ["MoonlightPortable", "x64", ".zip"],
-        ExcludedAssetKeywords: ["arm64", "symbols", "pdb", "Setup"]);
-
     private static readonly EngineDescriptor SunshineDescriptor = new(
         Kind: EngineKind.Sunshine,
         Id: "sunshine",
         DisplayName: "Sunshine",
         RoleTag: "高刷被控端",
-        Description: "开源自托管串流服务端，支持 NVENC / QSV / AMF 硬件编码，与 Moonlight 配合使用。",
+        Description: "开源自托管串流服务端，支持 NVENC / QSV / AMF 硬件编码，与内置高刷控屏引擎配合使用。",
         License: "GPL-3.0",
         HomepageUrl: "https://github.com/LizardByte/Sunshine",
         ReleasesApiUrl: "https://api.github.com/repos/LizardByte/Sunshine/releases/latest",
@@ -29,20 +15,6 @@ internal static class EngineCatalog
         ExecutableName: "sunshine.exe",
         PreferredAssetKeywords: ["sunshine-windows-portable", ".zip"],
         ExcludedAssetKeywords: ["arm64", "installer", ".exe", "debug"]);
-
-    private static readonly EngineDescriptor RustDeskDescriptor = new(
-        Kind: EngineKind.RustDesk,
-        Id: "rustdesk",
-        DisplayName: "RustDesk",
-        RoleTag: "办公全能引擎",
-        Description: "开箱即用的远程桌面控制与被控引擎，适合日常办公、跨网协作与快速远控。",
-        License: "AGPL-3.0",
-        HomepageUrl: "https://github.com/rustdesk/rustdesk",
-        ReleasesApiUrl: "https://api.github.com/repos/rustdesk/rustdesk/releases/latest",
-        ReleasesPageUrl: "https://github.com/rustdesk/rustdesk/releases/latest",
-        ExecutableName: "rustdesk.exe",
-        PreferredAssetKeywords: ["x86_64", ".zip"],
-        ExcludedAssetKeywords: ["aarch64", "arm64", "msi", "sciter", "sha256"]);
 
     private static readonly EngineDescriptor EasyTierDescriptor = new(
         Kind: EngineKind.EasyTier,
@@ -61,17 +33,13 @@ internal static class EngineCatalog
 
     public static IReadOnlyList<EngineDescriptor> All { get; } =
     [
-        MoonlightDescriptor,
         SunshineDescriptor,
-        RustDeskDescriptor,
         EasyTierDescriptor,
     ];
 
     public static EngineDescriptor Get(EngineKind kind) => kind switch
     {
-        EngineKind.Moonlight => MoonlightDescriptor,
         EngineKind.Sunshine => SunshineDescriptor,
-        EngineKind.RustDesk => RustDeskDescriptor,
         EngineKind.EasyTier => EasyTierDescriptor,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "未知的引擎类型。"),
     };
@@ -181,9 +149,6 @@ internal static class EngineCatalog
         {
             case EngineKind.Sunshine:
                 sets.Add(["windows", "portable", ".zip"]);
-                break;
-            case EngineKind.RustDesk:
-                sets.Add(["x86_64", ".exe"]);
                 break;
             case EngineKind.EasyTier:
                 sets.Add(["windows", "x86_64", ".zip"]);

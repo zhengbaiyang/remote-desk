@@ -23,7 +23,7 @@ public partial class MainWindow
     private bool isCheckingOrDownloadingUpdate;
 
     private string CurrentAppVersion =>
-        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.6.0";
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "2.0.0";
 
     private string GetEffectiveUpdateRepository()
     {

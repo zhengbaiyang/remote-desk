@@ -37,18 +37,8 @@ internal static class EngineChecks
             Equal(httpGhUrl, EngineCatalog.ApplyMirror(httpGhUrl, "https://ghfast.top"));
         }),
 
-        ("EngineCatalog.SelectBestAsset picks portable x64 assets for Moonlight, Sunshine, and RustDesk", () =>
+        ("EngineCatalog.SelectBestAsset picks portable x64 assets for Sunshine and EasyTier", () =>
         {
-            var moonlight = EngineCatalog.SelectBestAsset(
-                EngineCatalog.Get(EngineKind.Moonlight),
-                [
-                    ("MoonlightSetup-6.1.0.exe", "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightSetup-6.1.0.exe"),
-                    ("MoonlightPortable-ARM64-6.1.0.zip", "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightPortable-ARM64-6.1.0.zip"),
-                    ("MoonlightPortable-x64-6.1.0-symbols.zip", "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightPortable-x64-6.1.0-symbols.zip"),
-                    ("MoonlightPortable-x64-6.1.0.zip", "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightPortable-x64-6.1.0.zip"),
-                ]);
-            Equal("MoonlightPortable-x64-6.1.0.zip", moonlight?.Name);
-
             var sunshinePrimary = EngineCatalog.SelectBestAsset(
                 EngineCatalog.Get(EngineKind.Sunshine),
                 [
@@ -67,29 +57,18 @@ internal static class EngineChecks
                 ]);
             Equal("Sunshine-Windows-2025-Portable.zip", sunshineFallback?.Name);
 
-            var rustDeskZip = EngineCatalog.SelectBestAsset(
-                EngineCatalog.Get(EngineKind.RustDesk),
+            var easyTier = EngineCatalog.SelectBestAsset(
+                EngineCatalog.Get(EngineKind.EasyTier),
                 [
-                    ("rustdesk-1.3.2-aarch64.exe", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-aarch64.exe"),
-                    ("rustdesk-1.3.2-x86_64-sciter.exe", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64-sciter.exe"),
-                    ("rustdesk-1.3.2-x86_64.msi", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64.msi"),
-                    ("rustdesk-1.3.2-x86_64.exe.sha256", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64.exe.sha256"),
-                    ("rustdesk-1.3.2-x86_64.exe", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64.exe"),
-                    ("rustdesk-1.3.2-x86_64.zip", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64.zip"),
+                    ("easytier-gui-windows-x86_64.zip", "https://github.com/EasyTier/EasyTier/releases/download/v2.2.0/easytier-gui-windows-x86_64.zip"),
+                    ("easytier-linux-x86_64.zip", "https://github.com/EasyTier/EasyTier/releases/download/v2.2.0/easytier-linux-x86_64.zip"),
+                    ("easytier-windows-x86_64-v2.2.0.zip", "https://github.com/EasyTier/EasyTier/releases/download/v2.2.0/easytier-windows-x86_64-v2.2.0.zip"),
                 ]);
-            Equal("rustdesk-1.3.2-x86_64.zip", rustDeskZip?.Name);
-
-            var rustDeskExeFallback = EngineCatalog.SelectBestAsset(
-                EngineCatalog.Get(EngineKind.RustDesk),
-                [
-                    ("rustdesk-1.3.2-x86_64-sciter.exe", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64-sciter.exe"),
-                    ("rustdesk-1.3.2-x86_64.exe", "https://github.com/rustdesk/rustdesk/releases/download/1.3.2/rustdesk-1.3.2-x86_64.exe"),
-                ]);
-            Equal("rustdesk-1.3.2-x86_64.exe", rustDeskExeFallback?.Name);
+            Equal("easytier-windows-x86_64-v2.2.0.zip", easyTier?.Name);
 
             var none = EngineCatalog.SelectBestAsset(
-                EngineCatalog.Get(EngineKind.Moonlight),
-                [("MoonlightPortable-x64-6.1.0.zip", "http://github.com/insecure.zip")]);
+                EngineCatalog.Get(EngineKind.Sunshine),
+                [("sunshine-windows-portable.zip", "http://github.com/insecure.zip")]);
             Equal(true, none is null);
         }),
 
@@ -98,57 +77,51 @@ internal static class EngineChecks
             var root = Path.Combine(tempRoot, "engine-local-" + Guid.NewGuid().ToString("N"));
             var manager = new EngineManager(Path.Combine(root, "engines"));
 
-            // Nested zip (depth 2) for Moonlight
-            var zipPath = Path.Combine(root, "MoonlightPortable-x64.zip");
+            // Nested zip (depth 2) for Sunshine
+            var zipPath = Path.Combine(root, "sunshine-windows-portable.zip");
             CreateZip(zipPath,
-                ("MoonlightPortable-x64/bin/Moonlight.exe", "MZ-MOONLIGHT"u8.ToArray()),
-                ("MoonlightPortable-x64/README.txt", "ok"u8.ToArray()));
+                ("Sunshine/bin/sunshine.exe", "MZ-SUNSHINE"u8.ToArray()),
+                ("Sunshine/README.txt", "ok"u8.ToArray()));
 
             var reported = new List<EngineInstallProgress>();
             var progress = new SyncProgress<EngineInstallProgress>(reported.Add);
 
-            var status = manager.InstallFromLocalFileAsync(EngineKind.Moonlight, zipPath, progress, CancellationToken.None)
+            var status = manager.InstallFromLocalFileAsync(EngineKind.Sunshine, zipPath, progress, CancellationToken.None)
                 .GetAwaiter().GetResult();
 
             Equal(EngineInstallState.ManagedInstalled, status.State);
             Equal(true, status.ExecutablePath is not null && File.Exists(status.ExecutablePath));
-            Equal("Moonlight.exe", Path.GetFileName(status.ExecutablePath));
+            Equal("sunshine.exe", Path.GetFileName(status.ExecutablePath));
             Equal("local", status.InstalledVersion);
             Equal(true, reported.Count > 0 && reported[^1].Percentage == 100);
-            Equal(true, File.Exists(Path.Combine(manager.GetEngineDirectory(EngineKind.Moonlight), "engine-meta.json")));
+            Equal(true, File.Exists(Path.Combine(manager.GetEngineDirectory(EngineKind.Sunshine), "engine-meta.json")));
 
-            // Direct exe (renamed portable release filename) for RustDesk
-            var exePath = Path.Combine(root, "rustdesk-1.3.2-x86_64.exe");
-            File.WriteAllBytes(exePath, "MZ-RUSTDESK"u8.ToArray());
+            // Direct exe for EasyTier
+            var exePath = Path.Combine(root, "easytier-core.exe");
+            File.WriteAllBytes(exePath, "MZ-EASYTIER"u8.ToArray());
 
-            var rustDeskStatus = manager.InstallFromLocalFileAsync(EngineKind.RustDesk, exePath, null, CancellationToken.None)
+            var etStatus = manager.InstallFromLocalFileAsync(EngineKind.EasyTier, exePath, null, CancellationToken.None)
                 .GetAwaiter().GetResult();
 
-            Equal(EngineInstallState.ManagedInstalled, rustDeskStatus.State);
-            Equal(true, rustDeskStatus.ExecutablePath is not null && File.Exists(rustDeskStatus.ExecutablePath));
-            Equal("rustdesk.exe", Path.GetFileName(rustDeskStatus.ExecutablePath));
+            Equal(EngineInstallState.ManagedInstalled, etStatus.State);
+            Equal(true, etStatus.ExecutablePath is not null && File.Exists(etStatus.ExecutablePath));
+            Equal("easytier-core.exe", Path.GetFileName(etStatus.ExecutablePath));
 
             // Zip missing expected executable must fail without corrupting state
             var badZip = Path.Combine(root, "no-exe.zip");
             CreateZip(badZip, ("docs/readme.txt", "hello"u8.ToArray()));
             Throws<InvalidDataException>(() =>
-                manager.InstallFromLocalFileAsync(EngineKind.Sunshine, badZip, null, CancellationToken.None)
+                manager.InstallFromLocalFileAsync(EngineKind.EasyTier, badZip, null, CancellationToken.None)
                     .GetAwaiter().GetResult());
-            Equal(EngineInstallState.NotInstalled, manager.Inspect(EngineKind.Sunshine).State);
+            Equal(EngineInstallState.ManagedInstalled, manager.Inspect(EngineKind.EasyTier).State);
 
-            // Failed reinstall over existing managed Moonlight must preserve the existing installation
-            Throws<InvalidDataException>(() =>
-                manager.InstallFromLocalFileAsync(EngineKind.Moonlight, badZip, null, CancellationToken.None)
-                    .GetAwaiter().GetResult());
-            Equal(EngineInstallState.ManagedInstalled, manager.Inspect(EngineKind.Moonlight).State);
-
-            // Atomic replacement updates existing managed Moonlight cleanly
-            var upgradedZip = Path.Combine(root, "MoonlightPortable-v2.zip");
-            CreateZip(upgradedZip, ("Moonlight.exe", "MZ-MOONLIGHT-V2"u8.ToArray()));
-            var upgraded = manager.InstallFromLocalFileAsync(EngineKind.Moonlight, upgradedZip, null, CancellationToken.None)
+            // Atomic replacement updates existing managed Sunshine cleanly
+            var upgradedZip = Path.Combine(root, "sunshine-v2.zip");
+            CreateZip(upgradedZip, ("sunshine.exe", "MZ-SUNSHINE-V2"u8.ToArray()));
+            var upgraded = manager.InstallFromLocalFileAsync(EngineKind.Sunshine, upgradedZip, null, CancellationToken.None)
                 .GetAwaiter().GetResult();
             Equal(EngineInstallState.ManagedInstalled, upgraded.State);
-            Equal("MZ-MOONLIGHT-V2", File.ReadAllText(upgraded.ExecutablePath!));
+            Equal("MZ-SUNSHINE-V2", File.ReadAllText(upgraded.ExecutablePath!));
         }),
 
         ("EngineManager rejects Zip Slip path traversal archives", () =>
@@ -160,25 +133,25 @@ internal static class EngineChecks
             var traversalZip = Path.Combine(root, "zipslip.zip");
             CreateZip(traversalZip,
                 ("../../evil.txt", "pwned"u8.ToArray()),
-                ("Moonlight.exe", "MZ"u8.ToArray()));
+                ("sunshine.exe", "MZ"u8.ToArray()));
 
             Throws<InvalidDataException>(() =>
-                manager.InstallFromLocalFileAsync(EngineKind.Moonlight, traversalZip, null, CancellationToken.None)
+                manager.InstallFromLocalFileAsync(EngineKind.Sunshine, traversalZip, null, CancellationToken.None)
                     .GetAwaiter().GetResult());
 
             Equal(false, File.Exists(Path.Combine(root, "evil.txt")));
             Equal(false, File.Exists(Path.Combine(enginesRoot, "evil.txt")));
-            Equal(EngineInstallState.NotInstalled, manager.Inspect(EngineKind.Moonlight).State);
+            Equal(EngineInstallState.NotInstalled, manager.Inspect(EngineKind.Sunshine).State);
 
             var nestedTraversalZip = Path.Combine(root, "zipslip-nested.zip");
             CreateZip(nestedTraversalZip,
                 (@"sub\..\..\..\evil2.txt", "pwned"u8.ToArray()),
-                ("sunshine.exe", "MZ"u8.ToArray()));
+                ("easytier-core.exe", "MZ"u8.ToArray()));
 
             Throws<InvalidDataException>(() =>
-                manager.InstallFromLocalFileAsync(EngineKind.Sunshine, nestedTraversalZip, null, CancellationToken.None)
+                manager.InstallFromLocalFileAsync(EngineKind.EasyTier, nestedTraversalZip, null, CancellationToken.None)
                     .GetAwaiter().GetResult());
-            Equal(EngineInstallState.NotInstalled, manager.Inspect(EngineKind.Sunshine).State);
+            Equal(EngineInstallState.NotInstalled, manager.Inspect(EngineKind.EasyTier).State);
         }),
 
         ("EngineManager.Inspect tracks NotInstalled -> SystemInstalled -> ManagedInstalled -> Uninstall -> NotInstalled", () =>
@@ -244,10 +217,10 @@ internal static class EngineChecks
             Directory.CreateDirectory(root);
 
             var payloadZipPath = Path.Combine(root, "payload.zip");
-            CreateZip(payloadZipPath, ("MoonlightPortable/Moonlight.exe", "MZ-GH"u8.ToArray()));
+            CreateZip(payloadZipPath, ("Sunshine/sunshine.exe", "MZ-GH"u8.ToArray()));
             var payloadBytes = File.ReadAllBytes(payloadZipPath);
 
-            const string directAssetUrl = "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightPortable-x64-6.1.0.zip";
+            const string directAssetUrl = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.1/sunshine-windows-portable.zip";
             const string mirrorPrefix = "https://mirror.example.test";
             const string mirroredAssetUrl = mirrorPrefix + "/" + directAssetUrl;
 
@@ -260,15 +233,15 @@ internal static class EngineChecks
                 requestedUrls.Add(uri);
                 capturedUserAgent ??= request.Headers.UserAgent.ToString();
 
-                if (uri == EngineCatalog.Get(EngineKind.Moonlight).ReleasesApiUrl)
+                if (uri == EngineCatalog.Get(EngineKind.Sunshine).ReleasesApiUrl)
                 {
                     var releaseJson = JsonSerializer.Serialize(new
                     {
-                        tag_name = "v6.1.0",
+                        tag_name = "v0.23.1",
                         assets = new[]
                         {
-                            new { name = "MoonlightSetup-6.1.0.exe", browser_download_url = "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightSetup-6.1.0.exe" },
-                            new { name = "MoonlightPortable-x64-6.1.0.zip", browser_download_url = directAssetUrl },
+                            new { name = "sunshine-windows-installer.exe", browser_download_url = "https://github.com/LizardByte/Sunshine/releases/download/v0.23.1/sunshine-windows-installer.exe" },
+                            new { name = "sunshine-windows-portable.zip", browser_download_url = directAssetUrl },
                         },
                     });
                     return new HttpResponseMessage(HttpStatusCode.OK)
@@ -295,13 +268,13 @@ internal static class EngineChecks
             var updates = new List<EngineInstallProgress>();
 
             var installed = manager.InstallFromGitHubAsync(
-                EngineKind.Moonlight,
+                EngineKind.Sunshine,
                 mirrorPrefix,
                 new SyncProgress<EngineInstallProgress>(updates.Add),
                 CancellationToken.None).GetAwaiter().GetResult();
 
             Equal(EngineInstallState.ManagedInstalled, installed.State);
-            Equal("v6.1.0", installed.InstalledVersion);
+            Equal("v0.23.1", installed.InstalledVersion);
             Equal(true, capturedUserAgent is not null && capturedUserAgent.Contains("RemoteDesk", StringComparison.Ordinal));
             Equal(3, requestedUrls.Count);
             Equal(mirroredAssetUrl, requestedUrls[1]);
@@ -309,9 +282,9 @@ internal static class EngineChecks
             Equal(true, updates.Any(u => u.Percentage is > 0 and <= 80));
             Equal(true, updates[^1].Percentage == 100);
 
-            var metaPath = Path.Combine(manager.GetEngineDirectory(EngineKind.Moonlight), "engine-meta.json");
+            var metaPath = Path.Combine(manager.GetEngineDirectory(EngineKind.Sunshine), "engine-meta.json");
             using var metaDoc = JsonDocument.Parse(File.ReadAllText(metaPath));
-            Equal("v6.1.0", metaDoc.RootElement.GetProperty("version").GetString());
+            Equal("v0.23.1", metaDoc.RootElement.GetProperty("version").GetString());
             Equal(directAssetUrl, metaDoc.RootElement.GetProperty("sourceUrl").GetString());
             Equal(true, metaDoc.RootElement.TryGetProperty("installedAtUtc", out _));
         }),

@@ -1,3 +1,10 @@
 **/bin/
 **/obj/
 /artifacts/
+/third_party/
+src/RemoteDesk.StreamCore/build/
+server/.env
+server/data/
+**/__pycache__/
+*.pyc
+

@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.6.0</Version>
+    <Version>2.0.0</Version>
     <StartupObject>RemoteDesk.App</StartupObject>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
     <ApplicationIcon>Assets\remotedesk.ico</ApplicationIcon>
@@ -13,6 +13,13 @@
   <ItemGroup>
     <Resource Include="Assets\remotedesk.ico" />
     <Resource Include="Assets\remotedesk.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Native\RemoteDesk.StreamCore.dll" Condition="Exists('Native\RemoteDesk.StreamCore.dll')">
+      <Link>RemoteDesk.StreamCore.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Velopack" Version="1.2.161" />

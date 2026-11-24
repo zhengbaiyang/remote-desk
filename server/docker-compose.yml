@@ -1,7 +1,9 @@
 # RemoteDesk 阿里云自建节点部署编排（适配 2C2G 轻量应用服务器 / ECS）
-# 默认仅启动 EasyTier P2P 引导与私有中继节点；
+# 默认启动：
+#   1) easytier：EasyTier P2P 引导与私有中继节点（通配白名单仅放行本平台账号网络）
+#   2) sync    ：轻量账号认证与设备云同步服务（SQLite + TLS，内存上限 128MB）
 # 如需同时启动 RustDesk (hbbs/hbbr)，请使用 `bash server/deploy.sh --with-rustdesk`
-# 或执行 `docker compose --profile rustdesk up -d`
+# 或执行 `docker compose --profile rustdesk up -d --build`
 
 services:
   easytier:
@@ -24,11 +26,40 @@ services:
       - "ws://0.0.0.0:${EASYTIER_WS_PORT:-11011}"
       - "--no-tun"
       - "--relay-network-whitelist"
-      - "${EASYTIER_NETWORK_NAME:?EASYTIER_NETWORK_NAME must be set in .env}"
+      - "${EASYTIER_NETWORK_PREFIX:-remotedesk}-*"
     ports:
       - "${EASYTIER_PORT:-11010}:${EASYTIER_PORT:-11010}/tcp"
       - "${EASYTIER_PORT:-11010}:${EASYTIER_PORT:-11010}/udp"
       - "${EASYTIER_WS_PORT:-11011}:${EASYTIER_WS_PORT:-11011}/tcp"
+    networks:
+      - remotedesk-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sync:
+    build: ./sync
+    container_name: remotedesk-sync
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      - TZ=Asia/Shanghai
+      - SYNC_HOST=0.0.0.0
+      - SYNC_PORT=${SYNC_PORT:-11020}
+      - SYNC_DATA_DIR=/data
+      - PUBLIC_HOST=${PUBLIC_HOST:?PUBLIC_HOST must be set in .env}
+      - EASYTIER_PORT=${EASYTIER_PORT:-11010}
+      - EASYTIER_WS_PORT=${EASYTIER_WS_PORT:-11011}
+      - EASYTIER_NETWORK_PREFIX=${EASYTIER_NETWORK_PREFIX:-remotedesk}
+      - SYNC_INVITE_CODE=${SYNC_INVITE_CODE:?SYNC_INVITE_CODE must be set in .env}
+      - SYNC_TLS_CERT=/data/tls.crt
+      - SYNC_TLS_KEY=/data/tls.key
+    ports:
+      - "${SYNC_PORT:-11020}:${SYNC_PORT:-11020}/tcp"
+    volumes:
+      - ./data/sync:/data
     networks:
       - remotedesk-net
     logging:

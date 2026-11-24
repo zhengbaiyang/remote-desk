@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -133,6 +134,52 @@ internal static class EasyTierManager
         return startInfo;
     }
 
+    public static ProcessStartInfo CreateElevatedCoreStartInfo(string coreExecutable, EasyTierConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        if (!IsExecutable(coreExecutable))
+            throw new FileNotFoundException("找不到 EasyTier 核心程序 (easytier-core.exe)。", coreExecutable);
+
+        var validated = EasyTierConfig.Validate(config);
+        var args = new List<string>
+        {
+            "--network-name",
+            validated.NetworkName,
+            "--network-secret",
+            validated.NetworkSecret,
+        };
+
+        if (validated.AutoAssignIpv4 || string.IsNullOrEmpty(validated.VirtualIpv4))
+        {
+            args.Add("-d");
+        }
+        else
+        {
+            args.Add("-i");
+            args.Add(validated.VirtualIpv4);
+        }
+
+        if (!string.IsNullOrEmpty(validated.PeerUrl))
+        {
+            args.Add("-p");
+            args.Add(validated.PeerUrl);
+        }
+
+        args.Add("--hostname");
+        args.Add(SanitizeHostname(Environment.MachineName));
+        args.Add("--rpc-portal");
+        args.Add(DefaultRpcPortal);
+
+        return new ProcessStartInfo(coreExecutable)
+        {
+            WorkingDirectory = Path.GetDirectoryName(coreExecutable)!,
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden,
+            Arguments = string.Join(' ', args.Select(QuoteArgument)),
+        };
+    }
+
     public static bool IsMeshRunning()
     {
         var processes = Process.GetProcessesByName(CoreProcessName);
@@ -150,6 +197,59 @@ internal static class EasyTierManager
 
         using var process = Process.Start(startInfo);
         return process is not null;
+    }
+
+    public static bool StartMeshElevated(string coreExecutable, EasyTierConfig config)
+    {
+        var startInfo = CreateElevatedCoreStartInfo(coreExecutable, config);
+        if (IsMeshRunning())
+            return true;
+
+        using var process = Process.Start(startInfo);
+        return process is not null;
+    }
+
+    public static bool IsRelayOnlyPeer(EasyTierPeerInfo peer)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        if (peer.IsSelf || !string.IsNullOrWhiteSpace(peer.VirtualIpv4))
+            return false;
+
+        return peer.Hostname.Contains("relay", StringComparison.OrdinalIgnoreCase) ||
+               peer.Hostname.Contains("server", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsCurrentProcessElevated()
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+
+        const uint TokenQuery = 0x0008;
+        const uint TokenElevationClass = 20;
+
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery, out var tokenHandle))
+            return false;
+
+        try
+        {
+            var size = Marshal.SizeOf<int>();
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (!GetTokenInformation(tokenHandle, TokenElevationClass, buffer, size, out _))
+                    return false;
+
+                return Marshal.ReadInt32(buffer) != 0;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        finally
+        {
+            CloseHandle(tokenHandle);
+        }
     }
 
     public static bool StopMesh()
@@ -288,11 +388,14 @@ internal static class EasyTierManager
 
                 var peers = ParsePeersJson(stdout);
                 var localIpv4 = TryExtractLocalIpv4(peers);
+                var needsElevation = localIpv4 is null && !IsCurrentProcessElevated();
                 var detail = localIpv4 is not null
                     ? $"已连接虚拟网段（本机 {localIpv4}，共 {peers.Count} 个节点）"
-                    : peers.Count > 0
-                        ? $"EasyTier 运行中（发现 {peers.Count} 个节点）"
-                        : "EasyTier 运行中，等待节点加入";
+                    : needsElevation
+                        ? "EasyTier 运行中但未能分配虚拟 IP：Windows 创建虚拟网卡需要管理员权限，请点击「启用后台守护服务」修复。"
+                        : peers.Count > 0
+                            ? $"EasyTier 运行中（发现 {peers.Count} 个节点，正在等待虚拟 IP 就绪）"
+                            : "EasyTier 运行中，等待节点加入";
 
                 return new EasyTierStatus(
                     Installed: installed,
@@ -302,7 +405,8 @@ internal static class EasyTierManager
                     NetworkName: networkName,
                     PeerUrl: peerUrl,
                     Peers: peers,
-                    DetailMessage: detail);
+                    DetailMessage: detail,
+                    NeedsElevationWarning: needsElevation);
             }
             catch (OperationCanceledException)
             {
@@ -593,9 +697,32 @@ internal static class EasyTierManager
         }
     }
 
+    private static string QuoteArgument(string value) =>
+        value.Contains(' ') || value.Contains('\t') ? $"\"{value}\"" : value;
+
     private static bool IsExecutable(string? path) =>
         path is not null &&
         Path.IsPathFullyQualified(path) &&
         string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) &&
         File.Exists(path);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle,
+        uint tokenInformationClass,
+        IntPtr tokenInformation,
+        int tokenInformationLength,
+        out int returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 }

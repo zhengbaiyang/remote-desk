@@ -2,13 +2,14 @@
   <img src="src/RemoteDesk/Assets/remotedesk.png" alt="RemoteDesk 项目标志" width="80" height="80">
 </p>
 
-<h1 align="center">RemoteDesk 远程桌面（校园网高刷 &amp; 跨网组网版）</h1>
+<h1 align="center">RemoteDesk 2.0（一体化高刷远程桌面平台）</h1>
 
-<p align="center">面向 Windows 的双引擎远程桌面工作台：同校园网 / 局域网 120fps 高刷串流直连，跨外网通过 EasyTier P2P 虚拟组网与阿里云自建中继无缝穿透。</p>
+<p align="center">面向 Windows 的一体化零配置高刷远程桌面软件：内置基于 moonlight-common-c + D3D11 硬件解码 + Opus/WASAPI 的原生控屏核心，配套 Sunshine 被控端、阿里云邀请码账号云同步与 EasyTier P2P 跨网虚拟组网，像 UU 远程一样打开即连。</p>
 
 <p align="center">
   <a href="https://github.com/zhengbaiyang/remote-desk/releases/latest/download/RemoteDesk.Windows-win-Setup.exe"><strong>下载 Windows x64 安装包</strong></a> ·
   <a href="#核心能力">核心能力</a> ·
+  <a href="docs/v2-architecture.md">v2.0 架构说明</a> ·
   <a href="docs/aliyun-server-guide.md">阿里云跨网节点指南</a> ·
   <a href="#从源码构建">从源码构建</a>
 </p>
@@ -17,53 +18,44 @@
 
 ## 核心能力
 
-- **双引擎无缝切换（远程控制）**：
-  - **高刷串流（Moonlight + Sunshine）**：支持 1080p 120fps / 2K 60fps / 省流与自定义分辨率、帧率、码率（2–150 Mbps）、HEVC / AV1 / H.264 硬件编解码。
-  - **办公模式（RustDesk）**：通过设备 ID 或直连地址快速接入，适合跨网协作、剪贴板共享与文件传输。
-- **托管式引擎中心（引擎与设置）**：
-  - 统一管理 **Moonlight**、**Sunshine**、**RustDesk** 与 **EasyTier** 四大开源引擎。
-  - 支持从 GitHub Release **一键安装**便携版至 `%LOCALAPPDATA%\RemoteDesk\engines\`、**导入本地压缩包**、**手动指定路径**及**卸载托管**。
-  - 内置 **国内 HTTPS 镜像加速**（失败时自动回退直连 GitHub），同时作用于引擎拉取与软件更新。
-- **本机被控中心（本机被控）**：
-  - 一键启停本机 Sunshine 高刷被控端与 RustDesk 办公被控端，快捷打开 Sunshine 控制台（`https://localhost:47990`）。
-  - 自动展示本机校园网 / 局域网 IPv4、IPv6 地址与主机名（支持一键复制），并识别 NVIDIA NVENC / Intel QSV / AMD AMF 硬件编码器。
-- **EasyTier P2P 跨网组网（网络节点）**：
-  - 保留校园网 / 局域网零服务器直连概览，同时提供 EasyTier P2P 虚拟组网控制面板（节点地址、网络名称、可掩码密钥、自动分配虚拟 IP、随软件自动启动）。
-  - 实时展示在线组网节点、虚拟 IPv4、`直连 (P2P)` / `中继 (Relay)` 状态与延迟，支持**一键添加到设备**并发起 Moonlight 高刷串流。
-  - 配套阿里云轻量服务器 3 分钟部署套件：[`server/docker-compose.yml`](server/docker-compose.yml)、[`server/deploy.sh`](server/deploy.sh)、[`server/.env.example`](server/.env.example) 与完整中文教程 [`docs/aliyun-server-guide.md`](docs/aliyun-server-guide.md)。
-- **GitHub Release 自动更新**：
-  - 支持自定义更新仓库源（默认 `zhengbaiyang/remote-desk`，可输入 `owner/repo` 或完整 GitHub HTTPS 链接）。
-  - **Velopack 安装版**：启动时及每 6 小时自动检测并后台下载，支持「立即重启更新」与国内镜像加速回退。
-  - **便携版 / 开发版**：同样自动检测仓库最新 Release，展示版本号与更新说明，支持一键「下载并安装最新版」或跳转发布页。
-
-## 首次使用
-
-1. **安装引擎**：打开 RemoteDesk，进入「引擎与设置」，按需一键安装 **Moonlight**（控制端）、**Sunshine**（被控端）、**RustDesk**（办公端）或 **EasyTier**（跨网组网）。如访问 GitHub 较慢，可先填写国内 HTTPS 镜像前缀。
-2. **校园网 / 局域网直连**：在被控电脑打开「本机被控」启动 Sunshine 并复制本机 IPv4 / IPv6；在操作端「远程控制」添加电脑、发起首次配对后即可 120fps 直连。
-3. **跨外网 / 回家远控宿舍电脑**：按 [`docs/aliyun-server-guide.md`](docs/aliyun-server-guide.md) 在 2C2G 阿里云轻量服务器运行 `./server/deploy.sh`，随后在两端 RemoteDesk 的「网络节点」填入相同的网络名称、密钥与节点地址（`tcp://<公网IP>:11010`）并启动组网，在节点列表点击「添加到设备」即可跨网高刷连接。
-
-所有设备配置、引擎路径、EasyTier 参数、镜像前缀与更新仓库源保存在 `%LOCALAPPDATA%\RemoteDesk\settings.json`，与程序安装目录分离。
+- **内置原生高刷控屏引擎（`RemoteDesk.StreamCore.dll`）**：
+  - 无需再额外下载或弹出外部 `Moonlight.exe` / `RustDesk.exe` 窗口，从连接发起、硬件解码到键鼠音频均在主软件内置窗口中原生完成。
+  - 基于 `moonlight-common-c` + Windows CNG（`bcrypt`）+ Media Foundation D3D11VA 硬解（H.264 / HEVC / AV1）+ Opus / WASAPI 低延迟音频渲染。
+- **UU 远程风格操控体验**：
+  - 默认以可缩放窗口（`1280×760`）打开，一键或按 `F11` 切换无边框全屏，全屏顶部悬浮控制条支持鼠标悬停呼出、移开自动收起。
+  - **办公自由指针**（默认不锁鼠、高精度绝对坐标映射）与 **游戏相对锁定**（`WM_INPUT` 原始鼠标与系统键透传，`Ctrl+Alt` 随时释放）一键切换。
+  - 支持会话内在线调节分辨率 / 帧率 / 码率 / 编码器并平滑重连，集成常用系统组合键（`Ctrl+Alt+Del`、`Win`、`Win+D`、`Alt+Tab`、`TaskMgr`、`Win+L`）、一键静音及可穿透点击的性能仪表盘 HUD。
+- **协同办公与隐私防窥进阶能力**：
+  - **双向剪贴板同步**：支持文本与截图实时双向同步。
+  - **文件快传**：支持向控屏窗口直接拖拽文件或点击「传文件」高速发送至被控端 `下载\RemoteDesk`（基于同账号 HMAC-SHA256 鉴权与 SHA-256 落盘校验）。
+  - **自动分辨率匹配与断开还原**：发起连接前自动适配被控端显示器分辨率，断开会话后自动恢复原桌面设置。
+  - **防窥黑屏与远程电源控制**：利用 `WDA_EXCLUDEFROMCAPTURE` 让被控端物理显示器熄黑保护隐私而远控画面保持清晰（被控端按 `Ctrl+Alt+End` 可紧急解除）；支持远程锁屏、重启与关机。
+- **账号云同步 · 零配置自动组网与配对**：
+  - 邀请码注册/登录同账号，阿里云服务端（[`server/sync/`](server/sync/)）为每台设备自动分配独立虚拟子网（`10.126.126.2..254`）与隔离认证密钥，配合后台守护服务（`RemoteDeskAgent`）实现开机/锁屏在线与零 PIN 自动配对。
+- **精简托管引擎中心与热更新**：
+  - 统一管理 **Sunshine**（高刷被控端）与 **EasyTier**（P2P 跨网组网）两大开源引擎，支持国内 HTTPS 镜像加速、离线压缩包导入以及 GitHub Release / Velopack 自动更新。
 
 ## 从源码构建
 
-在 Windows 上安装 .NET 8 SDK，克隆仓库后在根目录打开 PowerShell：
+在 Windows 上安装 Visual Studio 2022 Build Tools（C++ 桌面工作负载，含 CMake/Ninja）与 .NET 8 SDK：
 
 ```powershell
-# 编译 Release
+# 1. 拉取第三方原生依赖（third_party/moonlight-common-c 与 opus）
+.\native\fetch_deps.ps1
+
+# 2. 编译内置原生串流内核 RemoteDesk.StreamCore.dll
+.\native\build_streamcore.ps1
+
+# 3. 编译 Release 客户端
 dotnet build src/RemoteDesk/RemoteDesk.csproj -c Release
 
-# 运行全部核心、引擎、EasyTier 与自动更新单元测试
+# 4. 运行全部核心、网络、同步、原生协议与协同单元测试
 dotnet run --project tests/RemoteDesk.Checks/RemoteDesk.Checks.csproj -c Release
 
-# 启动桌面程序
-dotnet run --project src/RemoteDesk/RemoteDesk.csproj
-
-# 生成 Windows x64 安装包与 Velopack 更新文件
+# 5. 生成 Windows x64 安装包与 Velopack 更新文件
 .\packaging\build.ps1
 ```
 
-构建产物位于 `artifacts/releases/<版本>/`。发布新版时递增 `src/RemoteDesk/RemoteDesk.csproj` 的 `Version` 并重新打包，将 `RemoteDesk.Windows-win-Setup.exe`、`releases.win.json` 和对应的 `*-full.nupkg` 一同上传至 GitHub Release 并设为 Latest。
-
 ## 开源许可
 
-RemoteDesk 自有代码、部署脚本、文档和图标采用 [MIT 许可证](LICENSE)。安装与热更新由 Velopack（MIT）驱动；Moonlight（GPL-3.0）、Sunshine（GPL-3.0）、RustDesk（AGPL-3.0）与 EasyTier（Apache-2.0）作为独立托管外部进程运行，各自遵循其上游开源协议。
+本项目以 **GNU General Public License v3.0 (GPL-3.0)** 开源协议发布，详见 [LICENSE](LICENSE)（与内置的 `moonlight-common-c` 兼容；音频编解码器 Opus 采用 3-Clause BSD，EasyTier 采用 Apache-2.0，Velopack 采用 MIT）。

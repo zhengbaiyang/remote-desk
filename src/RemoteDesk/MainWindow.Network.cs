@@ -22,7 +22,12 @@ internal sealed record EasyTierPeerViewModel(
     public static EasyTierPeerViewModel FromPeer(EasyTierPeerInfo peer)
     {
         var hostname = string.IsNullOrWhiteSpace(peer.Hostname) ? "未命名节点" : peer.Hostname;
-        var ipv4 = string.IsNullOrWhiteSpace(peer.VirtualIpv4) ? "等待分配 IP" : peer.VirtualIpv4;
+        var isRelayOnly = EasyTierManager.IsRelayOnlyPeer(peer);
+        var ipv4 = !string.IsNullOrWhiteSpace(peer.VirtualIpv4)
+            ? peer.VirtualIpv4
+            : isRelayOnly
+                ? "中继节点（无虚拟 IP）"
+                : "等待分配 IP（需守护服务）";
         var tone = peer.IsSelf
             ? "Self"
             : peer.ConnectionType == EasyTierManager.ConnectionTypeP2P
@@ -32,7 +37,7 @@ internal sealed record EasyTierPeerViewModel(
                     : "Unknown";
         var latency = peer.LatencyMs is { } ms ? $"{ms:0.#} ms" : "--";
         var protocol = string.IsNullOrWhiteSpace(peer.Protocol) ? "--" : peer.Protocol.ToUpperInvariant();
-        var canAdd = !peer.IsSelf && !string.IsNullOrWhiteSpace(peer.VirtualIpv4);
+        var canAdd = !peer.IsSelf && !isRelayOnly && !string.IsNullOrWhiteSpace(peer.VirtualIpv4);
 
         return new EasyTierPeerViewModel(peer, hostname, ipv4, peer.ConnectionType, tone, latency, protocol, canAdd);
     }
@@ -79,6 +84,17 @@ public partial class MainWindow
     {
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                var (_, svcRunning) = WindowsServiceInstaller.GetServiceStatus();
+                if (svcRunning)
+                {
+                    await PushConfigToDaemonIfRunningAsync();
+                    await RefreshEasyTierStatusAsync();
+                    return;
+                }
+            }
+
             var cfg = settings.EasyTier;
             if (cfg is { AutoStartWithApp: true })
             {
@@ -96,6 +112,12 @@ public partial class MainWindow
             ShowStatus($"自动启动 EasyTier 组网失败：{error.Message}", warning: true);
         }
 
+        await RefreshEasyTierStatusAsync();
+    }
+
+    private async Task RefreshDaemonAndEasyTierAsync()
+    {
+        RefreshDaemonServiceUi();
         await RefreshEasyTierStatusAsync();
     }
 
@@ -227,7 +249,50 @@ public partial class MainWindow
                 return;
 
             StartEasyTierButton.IsEnabled = false;
-            var started = EasyTierManager.StartMesh(coreExe, validated);
+
+            if (OperatingSystem.IsWindows())
+            {
+                var (_, svcRunning) = WindowsServiceInstaller.GetServiceStatus();
+                if (svcRunning)
+                {
+                    await PushConfigToDaemonIfRunningAsync();
+                    var (ok, _, err) = await AgentIpcClient.StartEasyTierAsync();
+                    if (!ok)
+                    {
+                        ShowEasyTierConfigFeedback(err ?? "守护服务启动 EasyTier 失败。", warning: true);
+                        ShowStatus(err ?? "守护服务启动 EasyTier 失败。", warning: true);
+                    }
+                    else
+                    {
+                        ShowEasyTierConfigFeedback("后台守护服务已启动 EasyTier，正在分配虚拟 IP…", warning: false);
+                        ShowStatus($"守护服务已启动 EasyTier 组网（网络：{validated.NetworkName}）。");
+                    }
+                    await Task.Delay(500);
+                    await RefreshEasyTierStatusAsync();
+                    return;
+                }
+            }
+
+            bool started;
+            if (EasyTierManager.IsCurrentProcessElevated())
+            {
+                started = EasyTierManager.StartMesh(coreExe, validated);
+            }
+            else
+            {
+                try
+                {
+                    started = EasyTierManager.StartMeshElevated(coreExe, validated);
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+                {
+                    ShowEasyTierConfigFeedback("已取消管理员授权，无法创建 EasyTier 虚拟网卡。建议启用后台守护服务实现免 UAC。", warning: true);
+                    ShowStatus("已取消提权授权。", warning: true);
+                    await RefreshEasyTierStatusAsync();
+                    return;
+                }
+            }
+
             if (!started)
             {
                 ShowEasyTierConfigFeedback("EasyTier 进程未能启动，请检查 easytier-core.exe 是否完整。", warning: true);
@@ -253,11 +318,23 @@ public partial class MainWindow
     {
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                var (_, svcRunning) = WindowsServiceInstaller.GetServiceStatus();
+                if (svcRunning)
+                {
+                    var (ok, _, err) = await AgentIpcClient.StopEasyTierAsync();
+                    await RefreshEasyTierStatusAsync();
+                    ShowStatus(ok ? "后台守护服务已停止 EasyTier 虚拟组网。" : (err ?? "停止 EasyTier 失败。"), warning: !ok);
+                    return;
+                }
+            }
+
             var stopped = EasyTierManager.StopMesh();
             await RefreshEasyTierStatusAsync();
             ShowStatus(stopped
                 ? "已停止本机 EasyTier 虚拟组网。"
-                : "未能完全停止 EasyTier 进程（若以管理员权限启动，请尝试提升权限后停止）。", warning: !stopped);
+                : "未能完全停止 EasyTier 进程（若以管理员权限启动，请尝试提升权限或使用守护服务停止）。", warning: !stopped);
         }
         catch (Exception error)
         {
@@ -311,7 +388,33 @@ public partial class MainWindow
         {
             var coreExe = ResolveEasyTierExecutable();
             var cfg = settings.EasyTier ?? new EasyTierConfig();
-            var status = await EasyTierManager.QueryStatusAsync(coreExe, cfg, cts.Token);
+
+            EasyTierStatus? status = null;
+            if (OperatingSystem.IsWindows())
+            {
+                var (_, svcRunning) = WindowsServiceInstaller.GetServiceStatus();
+                if (svcRunning)
+                {
+                    var runtime = await AgentIpcClient.TryGetStatusAsync(cts.Token);
+                    if (runtime is not null)
+                    {
+                        var etInstalled = coreExe is not null;
+                        status = new EasyTierStatus(
+                            Installed: etInstalled,
+                            Running: runtime.EasyTierRunning,
+                            CoreExecutablePath: coreExe,
+                            VirtualIpv4: runtime.EasyTierVirtualIpv4,
+                            NetworkName: cfg.NetworkName,
+                            PeerUrl: cfg.PeerUrl,
+                            Peers: runtime.EasyTierPeers,
+                            DetailMessage: runtime.EasyTierDetail,
+                            NeedsElevationWarning: false,
+                            ManagedByService: true);
+                    }
+                }
+            }
+
+            status ??= await EasyTierManager.QueryStatusAsync(coreExe, cfg, cts.Token);
             if (cts.IsCancellationRequested)
                 return;
 
@@ -364,7 +467,10 @@ public partial class MainWindow
 
         EasyTierDetailText.Text = !string.IsNullOrWhiteSpace(status.DetailMessage)
             ? status.DetailMessage
-            : "配置同一网络名称、密钥与阿里云节点地址后启动，即可自动建立 P2P 虚拟局域网。";
+            : "登录后自动分配隔离网络与固定虚拟 IP；无账号时也可在下方高级选项手动组网。";
+
+        EasyTierElevationBanner.Visibility = status.NeedsElevationWarning ? Visibility.Visible : Visibility.Collapsed;
+        RefreshDaemonServiceUi();
 
         StartEasyTierButton.IsEnabled = status.Installed && !status.Running;
         StopEasyTierButton.IsEnabled = status.Running;

@@ -24,11 +24,7 @@ internal sealed record HostStatus(
     bool SunshineInstalled,
     bool SunshineRunning,
     bool SunshineServiceRegistered,
-    bool RustDeskInstalled,
-    bool RustDeskRunning,
-    bool RustDeskServiceRegistered,
-    string? SunshineExecutablePath,
-    string? RustDeskExecutablePath);
+    string? SunshineExecutablePath);
 
 internal static class HostServiceManager
 {
@@ -54,13 +50,15 @@ internal static class HostServiceManager
         var rawAddresses = new List<IPAddress>();
         try
         {
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (nic.OperationalStatus != OperationalStatus.Up)
-                    continue;
-                if (nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
-                    continue;
+            var interfaces = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(nic =>
+                    nic.OperationalStatus == OperationalStatus.Up &&
+                    nic.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) &&
+                    !IsVirtualOrProxyAdapter(nic.Name, nic.Description))
+                .OrderBy(nic => GetAdapterPriority(nic.NetworkInterfaceType));
 
+            foreach (var nic in interfaces)
+            {
                 IPInterfaceProperties properties;
                 try
                 {
@@ -86,6 +84,50 @@ internal static class HostServiceManager
         return new LocalNetworkInfo(hostName, ipv4, ipv6);
     }
 
+    internal static bool IsVirtualOrProxyAdapter(string? name, string? description)
+    {
+        var combined = $"{name ?? ""} {description ?? ""}";
+        if (string.IsNullOrWhiteSpace(combined))
+            return false;
+
+        string[] blockedKeywords =
+        [
+            "clash",
+            "mihomo",
+            "sing-box",
+            "wintun",
+            "easytier",
+            "tailscale",
+            "zerotier",
+            "wireguard",
+            "tap-windows",
+            "vethernet",
+            "hyper-v",
+            "vmware",
+            "virtualbox",
+            "bluetooth",
+            "loopback",
+            "npcap",
+            "sangfor",
+            "easyconnect",
+        ];
+
+        foreach (var keyword in blockedKeywords)
+        {
+            if (combined.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static int GetAdapterPriority(NetworkInterfaceType type) => type switch
+    {
+        NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet or NetworkInterfaceType.FastEthernetT => 0,
+        NetworkInterfaceType.Wireless80211 => 1,
+        _ => 2,
+    };
+
     internal static (IReadOnlyList<string> IPv4, IReadOnlyList<string> IPv6) FilterIpAddresses(IEnumerable<IPAddress> addresses)
     {
         var ipv4 = new List<string>();
@@ -104,8 +146,14 @@ internal static class HostServiceManager
                     continue;
 
                 var bytes = address.GetAddressBytes();
-                if (bytes.Length == 4 && bytes[0] == 169 && bytes[1] == 254)
-                    continue;
+                if (bytes.Length == 4)
+                {
+                    // Skip APIPA (169.254.0.0/16) and RFC 2544 / proxy Fake-IP (198.18.0.0/15).
+                    if (bytes[0] == 169 && bytes[1] == 254)
+                        continue;
+                    if (bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19))
+                        continue;
+                }
 
                 var text = address.ToString();
                 if (seenV4.Add(text))
@@ -230,26 +278,17 @@ internal static class HostServiceManager
         return null;
     }
 
-    public static HostStatus GetHostStatus(string? sunshineExe, string? rustDeskExe)
+    public static HostStatus GetHostStatus(string? sunshineExe)
     {
         var resolvedSunshine = IsExecutable(sunshineExe) ? sunshineExe : null;
-        var resolvedRustDesk = IsExecutable(rustDeskExe) ? rustDeskExe : null;
-
         var sunshineServiceRegistered = IsWindowsServiceRegistered("SunshineService") || IsWindowsServiceRegistered("sunshinesvc");
-        var rustDeskServiceRegistered = IsWindowsServiceRegistered("RustDesk");
-
         var sunshineRunning = IsSunshineRunning();
-        var rustDeskRunning = IsProcessRunning("rustdesk") || IsWindowsServiceRunning("RustDesk");
 
         return new HostStatus(
             SunshineInstalled: resolvedSunshine is not null,
             SunshineRunning: sunshineRunning,
             SunshineServiceRegistered: sunshineServiceRegistered,
-            RustDeskInstalled: resolvedRustDesk is not null,
-            RustDeskRunning: rustDeskRunning,
-            RustDeskServiceRegistered: rustDeskServiceRegistered,
-            SunshineExecutablePath: resolvedSunshine,
-            RustDeskExecutablePath: resolvedRustDesk);
+            SunshineExecutablePath: resolvedSunshine);
     }
 
     public static ProcessStartInfo CreateSunshineHostStart(string sunshineExe)
@@ -305,13 +344,6 @@ internal static class HostServiceManager
         }
 
         return allStopped && !IsSunshineRunning();
-    }
-
-    public static bool StartRustDeskHost(string rustDeskExe)
-    {
-        var startInfo = RustDeskClient.CreateHostStart(rustDeskExe);
-        using var process = Process.Start(startInfo);
-        return process is not null;
     }
 
     private static bool IsSunshineRunning() =>
