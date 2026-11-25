@@ -346,6 +346,50 @@ internal static class HostServiceManager
         return allStopped && !IsSunshineRunning();
     }
 
+    public static void StopProcessesUnderDirectory(string processName, string directoryPath, int? excludePid = null)
+    {
+        if (string.IsNullOrWhiteSpace(processName) || string.IsNullOrWhiteSpace(directoryPath))
+            return;
+
+        string normalizedDir;
+        try
+        {
+            normalizedDir = Path.GetFullPath(directoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return;
+        }
+
+        foreach (var proc in Process.GetProcessesByName(processName))
+        {
+            using (proc)
+            {
+                try
+                {
+                    if (excludePid is int skip && proc.Id == skip)
+                        continue;
+                    if (proc.HasExited)
+                        continue;
+
+                    var modulePath = proc.MainModule?.FileName;
+                    if (string.IsNullOrEmpty(modulePath))
+                        continue;
+
+                    var fullModule = Path.GetFullPath(modulePath);
+                    if (!fullModule.StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(2000);
+                }
+                catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or NotSupportedException)
+                {
+                }
+            }
+        }
+    }
+
     private static bool IsSunshineRunning() =>
         IsProcessRunning("sunshine") ||
         IsProcessRunning("sunshinesvc") ||

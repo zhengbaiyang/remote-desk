@@ -51,6 +51,41 @@ internal static class AgentIpcClient
         CancellationToken ct = default) =>
         SendAndParseStatusAsync("set_security_pin", JsonSerializer.Serialize(new AgentSetSecurityPinPayload(required, newPin), JsonOptions), ct);
 
+    public static async Task<AgentSunshineCredsDto?> TryGetSunshineCredentialsAsync(CancellationToken ct = default)
+    {
+        var resp = await SendAsync(new AgentIpcRequest("get_sunshine_creds"), ct).ConfigureAwait(false);
+        if (!resp.Ok || string.IsNullOrWhiteSpace(resp.PayloadJson))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<AgentSunshineCredsDto>(resp.PayloadJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static async Task<bool> TryRequestServiceStopAsync(CancellationToken ct = default)
+    {
+        var resp = await SendAsync(new AgentIpcRequest("stop_self"), ct).ConfigureAwait(false);
+        return resp.Ok;
+    }
+
+    public static bool TryRequestServiceStopSync(int timeoutMs = 2500)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(timeoutMs);
+            return Task.Run(() => TryRequestServiceStopAsync(cts.Token), cts.Token).GetAwaiter().GetResult();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static async Task<(bool Ok, AgentRuntimeStatus? Status, string? Error)> SendAndParseStatusAsync(
         string command,
         string? payloadJson,

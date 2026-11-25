@@ -50,9 +50,19 @@ internal sealed class AutoPairOrchestrator
 
         if (!info.SunshineReady)
         {
-            return new AutoPairResult(
-                AutoPairStatus.Failed,
-                "目标电脑的高刷被控端（Sunshine）尚未就绪，请等待目标电脑后台自动配置完成。");
+            await Task.Delay(2000, ct).ConfigureAwait(false);
+            var (retryOk, retryInfo, _) = await _peerClient
+                .GetInfoAsync(targetHost, agentPort, agentAuthKey, ct)
+                .ConfigureAwait(false);
+            if (retryOk && retryInfo is not null)
+                info = retryInfo;
+
+            if (!info.SunshineReady)
+            {
+                return new AutoPairResult(
+                    AutoPairStatus.Failed,
+                    "目标电脑的高刷被控端（Sunshine）尚未启动或安装，请在目标电脑确认「允许本机被控」并等待自动配置完成。");
+            }
         }
 
         if (info.SecurityPinRequired && string.IsNullOrEmpty(securityPin))

@@ -313,10 +313,46 @@ public partial class RemoteSessionWindow : Window
 
             if (serverInfo.PairStatus != 1)
             {
-                SetErrorStatus(
-                    "目标主机尚未配对",
-                    "请返回设备列表选中该设备并点击「配对」（云同步设备会自动完成零 PIN 免密配对）。");
-                return;
+                if (_peerContext is not null && _peerClient is not null)
+                {
+                    SetConnectingStatus($"正在自动完成 {_device.Name} 安全配对…", "同账号零 PIN 静默授权中");
+                    var autoPair = new AutoPairOrchestrator(_peerClient);
+                    var localHostName = HostServiceManager.GetLocalNetworkInfo().HostName;
+                    var pairRes = await autoPair.NativeAutoPairAsync(
+                        _gsClient,
+                        _targetHost,
+                        _peerContext.AgentPort,
+                        _peerContext.AgentAuthKey,
+                        localHostName,
+                        securityPin: null,
+                        ct);
+
+                    if (ct.IsCancellationRequested || _isClosing || gen != Volatile.Read(ref _connectionGeneration))
+                        return;
+
+                    if (pairRes.Status is AutoPairStatus.NeedSecurityPin or AutoPairStatus.InvalidSecurityPin)
+                    {
+                        SetErrorStatus(
+                            "需要输入目标电脑独立安全密码",
+                            "请返回设备列表重新点击「一键高刷连接」，在密码框输入独立安全密码完成首次验证。");
+                        return;
+                    }
+
+                    if (!pairRes.IsSuccess)
+                    {
+                        SetErrorStatus("自动配对失败", pairRes.Message);
+                        return;
+                    }
+
+                    serverInfo = await _gsClient.GetServerInfoAsync(_targetHost, ct);
+                }
+                else
+                {
+                    SetErrorStatus(
+                        "目标主机尚未配对",
+                        "请返回设备列表选中该设备并点击「配对设备 (Pair)」。");
+                    return;
+                }
             }
 
             SetConnectingStatus("正在获取远程桌面会话…", "读取 Sunshine 应用列表");

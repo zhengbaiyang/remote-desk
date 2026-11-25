@@ -2,12 +2,33 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+using System.Text.Json;
 
 namespace RemoteDesk;
 
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 internal static class WindowsServiceInstaller
 {
+    public static string GetRestartDaemonMarkerPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RemoteDesk",
+        ".restart-daemon-after-update");
+
+    public static bool IsCurrentProcessElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static (bool Installed, bool Running) GetServiceStatus()
     {
         var scm = WindowsServiceInterop.OpenSCManagerW(null, null, WindowsServiceInterop.ScManagerConnect);
@@ -73,6 +94,38 @@ internal static class WindowsServiceInstaller
         }
     }
 
+    public static bool RunElevatedServiceCommandSync(string arguments, int timeoutMs = 22000)
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+            return false;
+
+        var startInfo = new ProcessStartInfo(exePath)
+        {
+            WorkingDirectory = Path.GetDirectoryName(exePath)!,
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden,
+            Arguments = arguments,
+        };
+
+        try
+        {
+            using var proc = Process.Start(startInfo);
+            if (proc is null)
+                return false;
+
+            if (!proc.WaitForExit(timeoutMs))
+                return false;
+
+            return proc.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static int InstallOrUpdateAndStart(string exePath)
     {
         if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
@@ -81,7 +134,8 @@ internal static class WindowsServiceInstaller
         // Avoid orphaned non-service easytier-core holding the RPC portal before service starts.
         EasyTierManager.StopMesh();
 
-        var binaryPath = $"\"{Path.GetFullPath(exePath)}\" --service";
+        var fullExePath = Path.GetFullPath(exePath);
+        var binaryPath = $"\"{fullExePath}\" --service";
         var scm = WindowsServiceInterop.OpenSCManagerW(null, null, WindowsServiceInterop.ScManagerAllAccess);
         if (scm == IntPtr.Zero)
             return Marshal.GetLastWin32Error();
@@ -116,8 +170,9 @@ internal static class WindowsServiceInstaller
                 {
                     WindowsServiceInterop.ControlService(svc, WindowsServiceInterop.ServiceControlStop, out _);
                     WaitForState(svc, WindowsServiceInterop.ServiceStopped, TimeSpan.FromSeconds(10));
-                    Thread.Sleep(300);
                 }
+
+                WaitForSiblingProcessesExit(Path.GetDirectoryName(fullExePath), graceMs: 3000, forceKillAfterGrace: true);
 
                 WindowsServiceInterop.ChangeServiceConfigW(
                     svc,
@@ -168,48 +223,211 @@ internal static class WindowsServiceInstaller
         }
     }
 
-    public static int StopAndUninstall()
+    public static int StopAndUninstall(bool cleanupAllData = false)
     {
+        var configuredSunshineDir = TryReadConfiguredSunshineDirectory();
+
+        var exitCode = 0;
         var scm = WindowsServiceInterop.OpenSCManagerW(null, null, WindowsServiceInterop.ScManagerConnect);
         if (scm == IntPtr.Zero)
-            return Marshal.GetLastWin32Error();
-
-        try
         {
-            var svc = WindowsServiceInterop.OpenServiceW(
-                scm,
-                AgentIpcConstants.ServiceName,
-                WindowsServiceInterop.ServiceStop | WindowsServiceInterop.ServiceQueryStatus | WindowsServiceInterop.DeleteAccess);
-
-            if (svc == IntPtr.Zero)
-                return 0;
-
+            exitCode = Marshal.GetLastWin32Error();
+        }
+        else
+        {
             try
             {
-                if (WindowsServiceInterop.QueryServiceStatus(svc, out var status) &&
-                    status.CurrentState != WindowsServiceInterop.ServiceStopped)
-                {
-                    WindowsServiceInterop.ControlService(svc, WindowsServiceInterop.ServiceControlStop, out _);
-                    WaitForState(svc, WindowsServiceInterop.ServiceStopped, TimeSpan.FromSeconds(8));
-                }
+                var svc = WindowsServiceInterop.OpenServiceW(
+                    scm,
+                    AgentIpcConstants.ServiceName,
+                    WindowsServiceInterop.ServiceStop | WindowsServiceInterop.ServiceQueryStatus | WindowsServiceInterop.DeleteAccess);
 
-                if (!WindowsServiceInterop.DeleteService(svc))
+                if (svc != IntPtr.Zero)
                 {
-                    var err = Marshal.GetLastWin32Error();
-                    return err == 1072 ? 0 : err; // ERROR_SERVICE_MARKED_FOR_DELETE
-                }
+                    try
+                    {
+                        if (WindowsServiceInterop.QueryServiceStatus(svc, out var status) &&
+                            status.CurrentState != WindowsServiceInterop.ServiceStopped)
+                        {
+                            WindowsServiceInterop.ControlService(svc, WindowsServiceInterop.ServiceControlStop, out _);
+                            WaitForState(svc, WindowsServiceInterop.ServiceStopped, TimeSpan.FromSeconds(10));
+                        }
 
-                return 0;
+                        if (!WindowsServiceInterop.DeleteService(svc))
+                        {
+                            var err = Marshal.GetLastWin32Error();
+                            if (err != 1072) // ERROR_SERVICE_MARKED_FOR_DELETE
+                                exitCode = err;
+                        }
+                    }
+                    finally
+                    {
+                        WindowsServiceInterop.CloseServiceHandle(svc);
+                    }
+                }
             }
             finally
             {
-                WindowsServiceInterop.CloseServiceHandle(svc);
+                WindowsServiceInterop.CloseServiceHandle(scm);
             }
         }
-        finally
+
+        // Release all file locks on the current application directory (including exiting --service/--session-bridge).
+        var currentInstallDir = !string.IsNullOrEmpty(Environment.ProcessPath)
+            ? Path.GetDirectoryName(Path.GetFullPath(Environment.ProcessPath))
+            : null;
+        WaitForSiblingProcessesExit(currentInstallDir, graceMs: 4000, forceKillAfterGrace: true);
+
+        EasyTierManager.StopMesh();
+        HostServiceManager.TryStopSunshineService();
+        StopManagedSunshineProcesses(configuredSunshineDir);
+        RemoveFirewallRules();
+
+        if (cleanupAllData)
         {
-            WindowsServiceInterop.CloseServiceHandle(scm);
+            try
+            {
+                var programDataDir = AgentIpcConstants.GetProgramDataDirectory();
+                if (Directory.Exists(programDataDir))
+                    Directory.Delete(programDataDir, recursive: true);
+            }
+            catch
+            {
+            }
         }
+
+        return exitCode;
+    }
+
+    public static void StopLocalAuxiliaryProcesses()
+    {
+        try
+        {
+            EasyTierManager.StopMesh();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            StopManagedSunshineProcesses(TryReadConfiguredSunshineDirectory());
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var currentInstallDir = !string.IsNullOrEmpty(Environment.ProcessPath)
+                ? Path.GetDirectoryName(Path.GetFullPath(Environment.ProcessPath))
+                : null;
+            WaitForSiblingProcessesExit(currentInstallDir, graceMs: 1200, forceKillAfterGrace: true);
+        }
+        catch
+        {
+        }
+    }
+
+    public static void WaitForSiblingProcessesExit(string? installDir, int graceMs, bool forceKillAfterGrace)
+    {
+        if (string.IsNullOrWhiteSpace(installDir))
+            return;
+
+        string normalizedDir;
+        try
+        {
+            normalizedDir = Path.GetFullPath(installDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        }
+        catch
+        {
+            return;
+        }
+
+        var exeName = !string.IsNullOrEmpty(Environment.ProcessPath)
+            ? Path.GetFileNameWithoutExtension(Environment.ProcessPath)
+            : "RemoteDesk";
+        var selfPid = Environment.ProcessId;
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(Math.Max(200, graceMs));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!AnySiblingInDirectory(exeName, normalizedDir, selfPid))
+                return;
+            Thread.Sleep(150);
+        }
+
+        if (forceKillAfterGrace)
+            HostServiceManager.StopProcessesUnderDirectory(exeName, normalizedDir, excludePid: selfPid);
+    }
+
+    private static bool AnySiblingInDirectory(string processName, string normalizedDir, int selfPid)
+    {
+        foreach (var proc in Process.GetProcessesByName(processName))
+        {
+            using (proc)
+            {
+                try
+                {
+                    if (proc.Id == selfPid || proc.HasExited)
+                        continue;
+
+                    var modulePath = proc.MainModule?.FileName;
+                    if (!string.IsNullOrEmpty(modulePath) &&
+                        Path.GetFullPath(modulePath).StartsWith(normalizedDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // System/elevated sibling process cannot be inspected from non-elevated caller; assume still running.
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void StopManagedSunshineProcesses(string? extraSunshineDir)
+    {
+        var localEnginesDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RemoteDesk",
+            "engines");
+
+        HostServiceManager.StopProcessesUnderDirectory("sunshine", localEnginesDir);
+        HostServiceManager.StopProcessesUnderDirectory("sunshinesvc", localEnginesDir);
+
+        if (!string.IsNullOrEmpty(extraSunshineDir))
+        {
+            HostServiceManager.StopProcessesUnderDirectory("sunshine", extraSunshineDir);
+            HostServiceManager.StopProcessesUnderDirectory("sunshinesvc", extraSunshineDir);
+        }
+    }
+
+    private static string? TryReadConfiguredSunshineDirectory()
+    {
+        try
+        {
+            var cfgPath = AgentIpcConstants.GetAgentConfigPath();
+            if (!File.Exists(cfgPath))
+                return null;
+
+            var doc = JsonSerializer.Deserialize<AgentConfigDocument>(
+                File.ReadAllText(cfgPath, Encoding.UTF8),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            if (!string.IsNullOrWhiteSpace(doc?.SunshineExecutablePath) &&
+                doc.SunshineExecutablePath.Contains($"{Path.DirectorySeparatorChar}RemoteDesk{Path.DirectorySeparatorChar}engines{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetDirectoryName(doc.SunshineExecutablePath);
+            }
+        }
+        catch
+        {
+        }
+        return null;
     }
 
     private static void ConfigureDescriptionAndRecovery(IntPtr svc)
@@ -264,12 +482,17 @@ internal static class WindowsServiceInstaller
 
     private static void ConfigureFirewallRules()
     {
-        TryRunNetsh($"advfirewall firewall delete rule name=\"RemoteDesk Agent 47999\"");
+        RemoveFirewallRules();
         TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Agent 47999\" dir=in action=allow protocol=TCP localport={AgentIpcConstants.DefaultAgentPort}");
-
-        TryRunNetsh($"advfirewall firewall delete rule name=\"RemoteDesk Sunshine Stream\"");
         TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream\" dir=in action=allow protocol=TCP localport=47984,47989,47990");
         TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream UDP\" dir=in action=allow protocol=UDP localport=47998-48010");
+    }
+
+    private static void RemoveFirewallRules()
+    {
+        TryRunNetsh("advfirewall firewall delete rule name=\"RemoteDesk Agent 47999\"");
+        TryRunNetsh("advfirewall firewall delete rule name=\"RemoteDesk Sunshine Stream\"");
+        TryRunNetsh("advfirewall firewall delete rule name=\"RemoteDesk Sunshine Stream UDP\"");
     }
 
     private static void TryRunNetsh(string args)

@@ -315,8 +315,96 @@ internal static class Milestone3Checks
             Equal(true, parsedResp is { Ok: true, PayloadJson.Length: > 0 });
             var parsedStatus = JsonSerializer.Deserialize<AgentRuntimeStatus>(parsedResp!.PayloadJson!, compactOpts);
             Equal("10.126.126.2", parsedStatus?.EasyTierVirtualIpv4);
+
+            var stopLine = JsonSerializer.Serialize(new AgentIpcRequest("stop_self"), compactOpts);
+            Equal(false, stopLine.Contains('\n'));
+            Equal("stop_self", JsonSerializer.Deserialize<AgentIpcRequest>(stopLine, compactOpts)?.Command);
+
+            var credsJson = JsonSerializer.Serialize(new AgentSunshineCredsDto("remotedesk", "SecPass123"), compactOpts);
+            var credsDto = JsonSerializer.Deserialize<AgentSunshineCredsDto>(credsJson, compactOpts);
+            Equal("remotedesk", credsDto?.Username);
+            Equal("SecPass123", credsDto?.Password);
+        }),
+
+        ("SunshineManager.SubmitPairingPinDetailedAsync classifies 200, status=false, and 401 unauthorized", () =>
+        {
+            var statusToReturn = HttpStatusCode.OK;
+            var bodyToReturn = """{"status":true}""";
+            using var client = new HttpClient(new DelegateHttpHandler((req, _) =>
+            {
+                return Task.FromResult(new HttpResponseMessage(statusToReturn)
+                {
+                    Content = new StringContent(bodyToReturn, Encoding.UTF8, "application/json"),
+                });
+            }));
+
+            var baseUri = new Uri("https://127.0.0.1:47990");
+            var okRes = SunshineManager.SubmitPairingPinDetailedAsync("1234", "PC-A", "remotedesk", "pass", baseUri, client).GetAwaiter().GetResult();
+            Equal(true, okRes.Success);
+            Equal(false, okRes.IsUnauthorized);
+
+            bodyToReturn = """{"status":false}""";
+            var falseRes = SunshineManager.SubmitPairingPinDetailedAsync("1234", "PC-A", "remotedesk", "pass", baseUri, client).GetAwaiter().GetResult();
+            Equal(false, falseRes.Success);
+            Equal(false, falseRes.IsUnauthorized);
+
+            statusToReturn = HttpStatusCode.Unauthorized;
+            bodyToReturn = "";
+            var unauthRes = SunshineManager.SubmitPairingPinDetailedAsync("1234", "PC-A", "remotedesk", "bad", baseUri, client).GetAwaiter().GetResult();
+            Equal(false, unauthRes.Success);
+            Equal(true, unauthRes.IsUnauthorized);
+        }),
+
+        ("SunshineManager.SubmitPinWithSelfHealAsync auto-recovers from HTTP 401 and retries /api/pin", () =>
+        {
+            var activePass = "stale-pass";
+            var reprovisionCount = 0;
+
+            using var client = new HttpClient(new DelegateHttpHandler((req, _) =>
+            {
+                var authHeader = req.Headers.Authorization?.Parameter ?? "";
+                var expectedParam = Convert.ToBase64String(Encoding.UTF8.GetBytes($"remotedesk:{activePass}"));
+                if (!string.Equals(authHeader, expectedParam, StringComparison.Ordinal))
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+
+                if (req.RequestUri!.AbsolutePath == "/api/config")
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"status":true}""", Encoding.UTF8, "application/json"),
+                });
+            }));
+
+            var localStoredPass = "wrong-old-pass";
+            var baseUri = new Uri("https://127.0.0.1:47990");
+            var (success, message) = SunshineManager.SubmitPinWithSelfHealAsync(
+                "4321",
+                "CLIENT-1",
+                getCredentials: () => ("remotedesk", localStoredPass),
+                reprovisionAndStartAsync: _ =>
+                {
+                    reprovisionCount++;
+                    activePass = "fresh-healed-pass";
+                    localStoredPass = activePass;
+                    return Task.FromResult<(bool, string, string, string?)>((true, "remotedesk", activePass, null));
+                },
+                wakeHostAsync: () => Task.FromResult(true),
+                baseUri: baseUri,
+                httpClient: client).GetAwaiter().GetResult();
+
+            Equal(true, success);
+            Equal(1, reprovisionCount);
+            Equal(true, message.Contains("静默完成配对", StringComparison.Ordinal));
         }),
     ];
+
+    private sealed class DelegateHttpHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            handler(request, cancellationToken);
+    }
 
     private sealed class PeerServerBridgeHandler(AgentPeerServer server) : HttpMessageHandler
     {

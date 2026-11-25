@@ -86,6 +86,16 @@ internal sealed class AgentDaemonRuntime : IDisposable
 
         await _hostOps.CleanupOnStopAsync().ConfigureAwait(false);
         EasyTierManager.StopMesh();
+
+        var managedSunshineExe = ResolveSunshineExe(_config);
+        if (!string.IsNullOrEmpty(managedSunshineExe) &&
+            managedSunshineExe.Contains($"{Path.DirectorySeparatorChar}RemoteDesk{Path.DirectorySeparatorChar}engines{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        {
+            var sunshineDir = Path.GetDirectoryName(managedSunshineExe);
+            if (!string.IsNullOrEmpty(sunshineDir))
+                HostServiceManager.StopProcessesUnderDirectory("sunshine", sunshineDir);
+        }
+
         Log("AgentDaemonRuntime stopped.");
     }
 
@@ -121,6 +131,11 @@ internal sealed class AgentDaemonRuntime : IDisposable
         var hostStatus = HostServiceManager.GetHostStatus(sunshineExe);
         SecretProtector.TryUnprotect(cfg.ProtectedAgentAuthKey, out var authKey);
 
+        if (cfg.HostModeEnabled && hostStatus.SunshineInstalled && !hostStatus.SunshineRunning)
+        {
+            _ = Task.Run(() => EnsureSunshineRunning());
+        }
+
         return new AgentPeerServerState(
             DeviceKey: cfg.DeviceKey ?? Environment.MachineName,
             Hostname: cfg.DeviceName ?? Environment.MachineName,
@@ -138,16 +153,30 @@ internal sealed class AgentDaemonRuntime : IDisposable
         if (!cfg.HostModeEnabled)
             return (false, "目标电脑未开启「允许本机被控」。");
 
-        if (!SecretProtector.TryUnprotect(cfg.ProtectedSunshineAdminPassword, out var adminPass) || string.IsNullOrEmpty(adminPass))
-            return (false, "目标电脑 Sunshine 自动托管凭据尚未初始化，请先启用被控服务。");
-
-        var adminUser = string.IsNullOrWhiteSpace(cfg.SunshineAdminUser)
-            ? SunshineManager.DefaultAdminUser
-            : cfg.SunshineAdminUser;
-
-        return await SunshineManager
-            .SubmitPairingPinAsync(pin, clientName, adminUser, adminPass, null, null, ct)
-            .ConfigureAwait(false);
+        return await SunshineManager.SubmitPinWithSelfHealAsync(
+            pin,
+            clientName,
+            getCredentials: () =>
+            {
+                var cur = _config;
+                if (SecretProtector.TryUnprotect(cur.ProtectedSunshineAdminPassword, out var pass) && !string.IsNullOrEmpty(pass))
+                {
+                    var user = string.IsNullOrWhiteSpace(cur.SunshineAdminUser)
+                        ? SunshineManager.DefaultAdminUser
+                        : cur.SunshineAdminUser;
+                    return (user, pass);
+                }
+                return null;
+            },
+            reprovisionAndStartAsync: token => ProvisionSunshineAndStartAsync(forceReprovision: true, token),
+            wakeHostAsync: async () =>
+            {
+                var res = await ProvisionSunshineAndStartAsync(forceReprovision: false, ct).ConfigureAwait(false);
+                return res.Ok;
+            },
+            baseUri: null,
+            httpClient: null,
+            ct: ct).ConfigureAwait(false);
     }
 
     private async Task RunPipeServerLoopAsync(CancellationToken ct)
@@ -395,6 +424,44 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
                 return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
+            case "get_sunshine_creds":
+            {
+                await _configLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    if (!SecretProtector.TryUnprotect(_config.ProtectedSunshineAdminPassword, out var pass) || string.IsNullOrEmpty(pass))
+                    {
+                        var prov = ProvisionSunshineAndStartInternal(forceReprovision: true);
+                        if (!prov.Ok)
+                            return new AgentIpcResponse(false, null, prov.Error ?? "Sunshine 托管凭据尚未初始化。");
+
+                        return new AgentIpcResponse(
+                            true,
+                            JsonSerializer.Serialize(new AgentSunshineCredsDto(prov.Username, prov.Password), IpcJsonOptions));
+                    }
+
+                    var user = string.IsNullOrWhiteSpace(_config.SunshineAdminUser)
+                        ? SunshineManager.DefaultAdminUser
+                        : _config.SunshineAdminUser;
+                    return new AgentIpcResponse(
+                        true,
+                        JsonSerializer.Serialize(new AgentSunshineCredsDto(user, pass), IpcJsonOptions));
+                }
+                finally
+                {
+                    _configLock.Release();
+                }
+            }
+            case "stop_self":
+            {
+                Log("Received graceful stop_self command via IPC.");
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(80).ConfigureAwait(false);
+                    WindowsServiceHost.RequestGracefulStop();
+                });
+                return new AgentIpcResponse(true);
+            }
             default:
                 return new AgentIpcResponse(false, null, $"未知命令：{req.Command}");
         }
@@ -493,44 +560,66 @@ internal sealed class AgentDaemonRuntime : IDisposable
         }
     }
 
-    private void EnsureSunshineRunning()
+    private async Task<(bool Ok, string Username, string Password, string? Error)> ProvisionSunshineAndStartAsync(
+        bool forceReprovision,
+        CancellationToken ct)
     {
+        await _configLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return ProvisionSunshineAndStartInternal(forceReprovision);
+        }
+        finally
+        {
+            _configLock.Release();
+        }
+    }
+
+    private void EnsureSunshineRunning() => _ = ProvisionSunshineAndStartInternal(forceReprovision: false);
+
+    private (bool Ok, string Username, string Password, string? Error) ProvisionSunshineAndStartInternal(bool forceReprovision)
+    {
+        var adminUser = string.IsNullOrWhiteSpace(_config.SunshineAdminUser)
+            ? SunshineManager.DefaultAdminUser
+            : _config.SunshineAdminUser;
+
         var sunshineExe = ResolveSunshineExe(_config);
         if (string.IsNullOrEmpty(sunshineExe))
-            return;
+            return (false, adminUser, "", "未检测到 Sunshine 安装程序。");
 
         try
         {
             var configPath = SunshineManager.ResolveConfigPath(sunshineExe);
             SunshineManager.EnsureSafeLocalConfig(configPath);
 
+            string? existingPass = null;
             var hasCreds = !string.IsNullOrEmpty(_config.SunshineAdminUser) &&
-                           SecretProtector.TryUnprotect(_config.ProtectedSunshineAdminPassword, out var existingPass) &&
+                           SecretProtector.TryUnprotect(_config.ProtectedSunshineAdminPassword, out existingPass) &&
                            !string.IsNullOrEmpty(existingPass);
 
-            if (!hasCreds)
+            var effectivePass = existingPass ?? "";
+            if (forceReprovision || !hasCreds)
             {
-                var wasRunning = HostServiceManager.GetHostStatus(sunshineExe).SunshineRunning;
-                if (wasRunning)
-                {
-                    HostServiceManager.TryStopSunshineService();
-                    HostServiceManager.StopSunshineHost();
-                }
-
                 var generatedPass = SunshineManager.GenerateRandomPassword();
-                var credsStart = SunshineManager.CreateSetCredentialsStartInfo(sunshineExe, SunshineManager.DefaultAdminUser, generatedPass);
-                using (var proc = Process.Start(credsStart))
+                var (ok, message) = SunshineManager.ProvisionCredentialsSync(sunshineExe, SunshineManager.DefaultAdminUser, generatedPass);
+                if (!ok)
                 {
-                    proc?.WaitForExit(5000);
+                    _lastError = message;
+                    Log($"ProvisionCredentialsSync failed: {message}");
+                    return (false, SunshineManager.DefaultAdminUser, "", message);
                 }
 
+                adminUser = SunshineManager.DefaultAdminUser;
+                effectivePass = generatedPass;
                 _config = _config with
                 {
-                    SunshineAdminUser = SunshineManager.DefaultAdminUser,
+                    SunshineAdminUser = adminUser,
                     ProtectedSunshineAdminPassword = SecretProtector.ProtectLocalMachine(generatedPass),
                 };
                 SaveConfigToDisk(_config);
-                Log("Initialized auto-managed Sunshine admin credentials.");
+                Log(forceReprovision
+                    ? "Re-provisioned auto-managed Sunshine admin credentials."
+                    : "Initialized auto-managed Sunshine admin credentials.");
             }
 
             var hostStatus = HostServiceManager.GetHostStatus(sunshineExe);
@@ -541,14 +630,20 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 {
                     _sunshineConsecutiveRestarts = 0;
                 }
-                return;
+                return (true, adminUser, effectivePass, null);
+            }
+
+            if (forceReprovision)
+            {
+                _sunshineConsecutiveRestarts = 0;
+                _lastSunshineStartUtc = DateTimeOffset.MinValue;
             }
 
             var backoffSeconds = Math.Min(300, 30 * (1 << Math.Min(_sunshineConsecutiveRestarts, 3)));
             if (_sunshineConsecutiveRestarts > 0 &&
                 DateTimeOffset.UtcNow - _lastSunshineStartUtc < TimeSpan.FromSeconds(backoffSeconds))
             {
-                return;
+                return (false, adminUser, effectivePass, "Sunshine 正在重启退避冷却中，请稍后重试。");
             }
 
             _lastSunshineStartUtc = DateTimeOffset.UtcNow;
@@ -557,25 +652,30 @@ internal sealed class AgentDaemonRuntime : IDisposable
             if (hostStatus.SunshineServiceRegistered && HostServiceManager.TryStartSunshineService())
             {
                 Log("Started Sunshine Windows service.");
-                return;
+                return (true, adminUser, effectivePass, null);
             }
 
             if (_isSystemService)
             {
                 if (_hostOps.LaunchInteractiveExecutable(sunshineExe))
+                {
                     Log("Started Sunshine host process in active console session.");
-                else
-                    Log("Skipped starting Sunshine in Session 0 (no active console session available).");
-                return;
+                    return (true, adminUser, effectivePass, null);
+                }
+
+                Log("Skipped starting Sunshine in Session 0 (no active console session available).");
+                return (false, adminUser, effectivePass, "当前处于无交互桌面会话，暂无法拉起 Sunshine。");
             }
 
             HostServiceManager.StartSunshineHost(sunshineExe);
             Log("Started Sunshine host process.");
+            return (true, adminUser, effectivePass, null);
         }
         catch (Exception ex) when (ex is IOException or Win32Exception or InvalidOperationException or ArgumentException)
         {
             _lastError = $"Sunshine 自动托管失败：{ex.Message}";
             Log($"EnsureSunshineRunning error: {ex.Message}");
+            return (false, adminUser, "", _lastError);
         }
     }
 

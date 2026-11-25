@@ -210,7 +210,10 @@ internal sealed class AgentPeerServer : IDisposable
         }
 
         using var ioTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        ioTimeoutCts.CancelAfter(method == "POST" && path == "/agent/v1/clipboard" ? TimeSpan.FromSeconds(20) : IoTimeout);
+        var ioTimeout = (method == "POST" && path == "/agent/v1/pair")
+            ? TimeSpan.FromSeconds(24)
+            : (method == "POST" && path == "/agent/v1/clipboard" ? TimeSpan.FromSeconds(20) : IoTimeout);
+        ioTimeoutCts.CancelAfter(ioTimeout);
         var effectiveCt = ioTimeoutCts.Token;
 
         var body = contentLength > 0 ? await ReadExactAsync(stream, contentLength, effectiveCt).ConfigureAwait(false) : [];

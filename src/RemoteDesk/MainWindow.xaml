@@ -1078,6 +1078,14 @@
                                             <TextBlock Text="打开 Sunshine 面板" VerticalAlignment="Center" />
                                         </StackPanel>
                                     </Button>
+                                    <Button x:Name="CopySunshineCredsButton" Click="CopySunshineCredsClicked"
+                                            Style="{StaticResource CompactQuietButton}" MinHeight="36" Margin="0,0,8,6"
+                                            ToolTip="仅在手动打开 Sunshine Web 控制台需要登录时使用；软件内远控无需此密码">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE8C8;" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                                            <TextBlock Text="复制面板密码" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
                                     <Button Content="前往引擎中心" Click="ShowEnginesPage"
                                             Style="{StaticResource InlineLinkButton}" VerticalAlignment="Center" Margin="4,0,0,6" />
                                 </WrapPanel>

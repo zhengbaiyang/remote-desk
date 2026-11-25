@@ -39,6 +39,7 @@ public partial class MainWindow
             UpdateHostNavIndicator();
 
             await PushConfigToDaemonIfRunningAsync();
+            ReconcileLocalPeerHost();
             if (enabled)
             {
                 var sunshineExe = ResolveSunshineExecutable();
@@ -90,6 +91,7 @@ public partial class MainWindow
             if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
                 await AgentIpcClient.SetSecurityPinAsync(required: false, newPin: null);
 
+            ReconcileLocalPeerHost();
             _ = SyncWithServerAndApplyAsync(userInitiated: false);
             ShowStatus("已关闭独立安全密码验证（恢复同账号设备免确认自动配对直连）。");
         }
@@ -117,6 +119,7 @@ public partial class MainWindow
                 await AgentIpcClient.SetSecurityPinAsync(required: true, newPin: pin);
 
             HostSecurityPinInput.Password = "";
+            ReconcileLocalPeerHost();
             _ = SyncWithServerAndApplyAsync(userInitiated: false);
             ShowStatus("已保存独立被控安全密码，新设备首次自动配对本机时需校验此密码。");
         }
@@ -307,11 +310,42 @@ public partial class MainWindow
             {
                 UseShellExecute = true,
             });
-            ShowStatus($"已在浏览器打开 Sunshine 控制台（{HostServiceManager.GetSunshineWebUiUrl()}）。");
+            ShowStatus($"已在浏览器打开 Sunshine 控制台（日常远控无需登录此面板；若需登录，用户名 {SunshineManager.DefaultAdminUser}，可点击「复制面板密码」）。");
         }
         catch (Win32Exception)
         {
             ShowStatus($"无法打开浏览器，请手动访问 {HostServiceManager.GetSunshineWebUiUrl()}。", warning: true);
+        }
+    }
+
+    private async void CopySunshineCredsClicked(object sender, RoutedEventArgs e)
+    {
+        var sunshineExe = ResolveSunshineExecutable();
+        if (sunshineExe is null)
+        {
+            ShowStatus("未检测到 Sunshine 安装程序，请先在「引擎与设置」安装。", warning: true);
+            return;
+        }
+
+        CopySunshineCredsButton.IsEnabled = false;
+        try
+        {
+            AgentSunshineCredsDto? creds = null;
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                creds = await AgentIpcClient.TryGetSunshineCredentialsAsync();
+
+            creds ??= localHostPeerHost?.TryGetOrProvisionManagedCredentials(sunshineExe);
+            if (creds is null || string.IsNullOrEmpty(creds.Password))
+            {
+                ShowStatus("未能获取或初始化 Sunshine 面板凭据，请确认已开启被控服务后重试。", warning: true);
+                return;
+            }
+
+            CopyTextToClipboard(creds.Password, $"Sunshine 面板密码（用户名 {creds.Username}）");
+        }
+        finally
+        {
+            CopySunshineCredsButton.IsEnabled = true;
         }
     }
 

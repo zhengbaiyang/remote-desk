@@ -14,6 +14,25 @@ internal static class WindowsServiceHost
     private static WindowsServiceInterop.ServiceMainDelegate? _serviceMainCallback;
     private static WindowsServiceInterop.ServiceControlHandlerExDelegate? _controlHandlerCallback;
 
+    public static void RequestGracefulStop()
+    {
+        try
+        {
+            if (_statusHandle != IntPtr.Zero)
+            {
+                _serviceStatus.CurrentState = WindowsServiceInterop.ServiceStopPending;
+                _serviceStatus.ControlsAccepted = 0;
+                _serviceStatus.WaitHint = 5000;
+                WindowsServiceInterop.SetServiceStatus(_statusHandle, ref _serviceStatus);
+            }
+
+            _stopEvent?.Set();
+        }
+        catch
+        {
+        }
+    }
+
     public static void RunService()
     {
         _serviceMainCallback = ServiceMain;

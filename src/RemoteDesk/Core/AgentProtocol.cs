@@ -138,6 +138,10 @@ internal sealed record AgentPairResponseDto(
     string? Error = null,
     string? Message = null);
 
+internal sealed record AgentSunshineCredsDto(
+    string Username,
+    string Password);
+
 internal sealed record AgentClipboardDto(
     long Sequence,
     string Kind,

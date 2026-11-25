@@ -99,6 +99,7 @@ public partial class MainWindow : Window
     private readonly EngineManager engineManager = new();
 
     private SessionBridgeServer? sessionBridgeServer;
+    private LocalHostPeerHost? localHostPeerHost;
     private AppSettings settings = new();
     private DeviceProfile? editingDevice;
     private AppPage currentPage = AppPage.Remote;
@@ -118,6 +119,7 @@ public partial class MainWindow : Window
         {
             sessionBridgeServer = new SessionBridgeServer(Dispatcher);
             sessionBridgeServer.Start();
+            localHostPeerHost = new LocalHostPeerHost();
         }
 
         try
@@ -154,6 +156,8 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) =>
         {
+            localHostPeerHost?.Dispose();
+            localHostPeerHost = null;
             sessionBridgeServer?.Dispose();
             sessionBridgeServer = null;
             accountSyncTimer.Stop();
@@ -167,6 +171,14 @@ public partial class MainWindow : Window
 
     private async Task OnMainWindowLoadedAsync()
     {
+        try
+        {
+            await ResumeDaemonAfterUpdateIfNeededAsync();
+        }
+        catch (Exception)
+        {
+        }
+
         try
         {
             await TryAutoStartEasyTierOnLaunchAsync();
@@ -750,9 +762,9 @@ public partial class MainWindow : Window
 
         SyncStreamControls(item.Stream, syncSliderValue: true);
 
-        ConnectButtonText.Text = "发起高刷连接";
+        ConnectButtonText.Text = item.IsCloudSynced ? "一键高刷连接" : "发起高刷连接";
         ConnectButtonIcon.Text = "\uE945";
-        PairButton.Visibility = Visibility.Visible;
+        PairButton.Visibility = item.IsCloudSynced ? Visibility.Collapsed : Visibility.Visible;
         ActionTargetSummary.Text = item.HostAddress is not null
             ? $"目标 {item.HostAddress} · {item.StreamAppName}"
             : "等待分配虚拟内网地址";
@@ -816,7 +828,7 @@ public partial class MainWindow : Window
         {
             ActionEngineDot.SetResourceReference(Shape.FillProperty, "Ready");
             ActionEngineHint.Text = item.IsCloudSynced
-                ? "内置原生高刷引擎已就绪 · 支持剪贴板 / 文件 / 分辨率适配 / 防窥"
+                ? "同账号设备免配对一键直连 · 自动完成加密授权与协同通道"
                 : "内置原生高刷控屏引擎已就绪（D3D11 硬件解码）";
             ActionEngineLink.Visibility = Visibility.Collapsed;
         }

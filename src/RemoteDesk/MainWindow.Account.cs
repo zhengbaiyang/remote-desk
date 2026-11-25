@@ -47,6 +47,80 @@ public partial class MainWindow
         UpdateSyncAuthPlaceholders();
         UpdateAccountModeIndicator(animate: false);
         RefreshAccountUi();
+        ReconcileLocalPeerHost();
+    }
+
+    private void ReconcileLocalPeerHost()
+    {
+        if (!OperatingSystem.IsWindows() || localHostPeerHost is null)
+            return;
+
+        if (!IsAccountLoggedIn() || !settings.HostModeEnabled || WindowsServiceInstaller.GetServiceStatus().Running)
+        {
+            localHostPeerHost.Stop();
+            return;
+        }
+
+        string? authKey = null;
+        if (!string.IsNullOrEmpty(settings.Account?.MeshConfig?.AgentAuthKey))
+            SecretProtector.TryUnprotect(settings.Account.MeshConfig.AgentAuthKey, out authKey);
+
+        var net = HostServiceManager.GetLocalNetworkInfo();
+        localHostPeerHost.Reconcile(
+            shouldRun: !string.IsNullOrEmpty(authKey),
+            deviceKey: EnsureLocalDeviceKeyPersisted(),
+            deviceName: net.HostName,
+            authKey: authKey,
+            sunshineExe: ResolveSunshineExecutable(),
+            securityPinRequired: settings.SecurityPinRequired,
+            securityPinSalt: settings.SecurityPinSalt,
+            securityPinHash: settings.SecurityPinHash);
+    }
+
+    private async Task ResumeDaemonAfterUpdateIfNeededAsync()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var marker = WindowsServiceInstaller.GetRestartDaemonMarkerPath();
+        if (!File.Exists(marker))
+            return;
+
+        try { File.Delete(marker); } catch { }
+
+        var (installed, running) = WindowsServiceInstaller.GetServiceStatus();
+        if (running || (!installed && !settings.HostModeEnabled && !IsAccountLoggedIn()))
+            return;
+
+        localHostPeerHost?.Stop();
+        ShowStatus("软件已更新完成，正在自动恢复后台守护服务…");
+
+        var ok = false;
+        if (WindowsServiceInstaller.IsCurrentProcessElevated())
+        {
+            var exe = Environment.ProcessPath ?? "";
+            ok = !string.IsNullOrEmpty(exe) && WindowsServiceInstaller.InstallOrUpdateAndStart(exe) == 0;
+        }
+        else
+        {
+            var res = await WindowsServiceInstaller.RunElevatedServiceCommandAsync("--install-service");
+            ok = res.Ok;
+        }
+
+        if (ok)
+        {
+            await Task.Delay(500);
+            await PushConfigToDaemonIfRunningAsync();
+            ShowStatus("后台守护服务已随更新自动恢复运行。");
+        }
+        else
+        {
+            ReconcileLocalPeerHost();
+            ShowStatus("未能自动恢复后台守护服务，如需系统级托管可在「本机被控」手动启用。", warning: true);
+        }
+
+        RefreshDaemonServiceUi();
+        RefreshHostStatus();
     }
 
     private string EnsureLocalDeviceKeyPersisted()
@@ -298,6 +372,7 @@ public partial class MainWindow
         });
 
         await PushConfigToDaemonIfRunningAsync();
+        ReconcileLocalPeerHost();
         RefreshAccountUi();
         RefreshDevices(0);
         ShowStatus("已退出当前同步账号。");
@@ -388,6 +463,7 @@ public partial class MainWindow
             });
 
             await PushConfigToDaemonOrApplyLocallyAsync(autoStartMesh: true);
+            ReconcileLocalPeerHost();
             RefreshAccountUi();
             SyncEasyTierFormFromSettings();
 
@@ -638,10 +714,14 @@ public partial class MainWindow
 
         try
         {
+            if (!isUninstall)
+                localHostPeerHost?.Stop();
+
             ShowStatus(isUninstall ? "正在请求管理员权限以卸载后台守护服务…" : "正在请求管理员权限以安装并启动后台守护服务…");
             var (ok, cancelled, message) = await WindowsServiceInstaller.RunElevatedServiceCommandAsync(flag);
             if (!ok)
             {
+                ReconcileLocalPeerHost();
                 ShowStatus(message, warning: !cancelled);
                 return;
             }
@@ -652,6 +732,7 @@ public partial class MainWindow
                 await PushConfigToDaemonIfRunningAsync();
             }
 
+            ReconcileLocalPeerHost();
             RefreshDaemonServiceUi();
             RefreshHostStatus();
             await RefreshEasyTierStatusAsync();
@@ -659,6 +740,7 @@ public partial class MainWindow
         }
         finally
         {
+            ReconcileLocalPeerHost();
             ToggleDaemonServiceButton.IsEnabled = true;
             FixEasyTierElevationButton.IsEnabled = true;
             AccountEnableDaemonButton.IsEnabled = true;

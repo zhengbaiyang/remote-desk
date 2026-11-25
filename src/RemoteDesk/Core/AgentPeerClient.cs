@@ -94,7 +94,7 @@ internal sealed class AgentPeerClient : IDisposable
         try
         {
             using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            reqCts.CancelAfter(RequestTimeout);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(22));
             using var req = BuildSignedRequest(HttpMethod.Post, baseUrl, path, bodyBytes, agentAuthKey);
             using var resp = await _httpClient.SendAsync(req, reqCts.Token).ConfigureAwait(false);
             var raw = await resp.Content.ReadAsStringAsync(reqCts.Token).ConfigureAwait(false);
