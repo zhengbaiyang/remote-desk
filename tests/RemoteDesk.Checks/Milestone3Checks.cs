@@ -1005,6 +1005,218 @@ internal static class Milestone3Checks
                     Directory.Delete(idDir, recursive: true);
             }
         }),
+
+        ("SessionInputPolicy resolves shortcuts, preserves Alt+Tab escape hatch, and gates toolbar auto-lock", () =>
+        {
+            // Ctrl+Alt releases only when pointer is currently locked (works for both left and right Ctrl/Alt).
+            Equal(SessionShortcutAction.ReleasePointerLock, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkLMenu, true, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.ReleasePointerLock, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkRMenu, true, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.ReleasePointerLock, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkLControl, true, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.ReleasePointerLock, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkRControl, true, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.None, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkMenu, true, true, true, false, isPointerLocked: false));
+
+            // Key-up never triggers any shortcut.
+            Equal(SessionShortcutAction.None, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkMenu, false, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.None, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkF11, false, false, false, false, isPointerLocked: true));
+
+            // Mode toggle, fullscreen, disconnect, and help shortcuts.
+            Equal(SessionShortcutAction.ToggleInputMode, SessionInputPolicy.ResolveShortcut('G', true, true, true, false, isPointerLocked: false));
+            Equal(SessionShortcutAction.ToggleFullscreen, SessionInputPolicy.ResolveShortcut(SessionInputPolicy.VkF11, true, false, false, false, isPointerLocked: false));
+            Equal(SessionShortcutAction.ToggleFullscreen, SessionInputPolicy.ResolveShortcut('F', true, true, true, false, isPointerLocked: true));
+            Equal(SessionShortcutAction.DisconnectSession, SessionInputPolicy.ResolveShortcut('Q', true, true, true, true, isPointerLocked: true));
+            Equal(SessionShortcutAction.ToggleHelpOverlay, SessionInputPolicy.ResolveShortcut('H', true, true, true, false, isPointerLocked: true));
+
+            // Alt+Tab and Alt+Esc are never swallowed by remote forwarding; Win/Apps forward only when locked.
+            Equal(false, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkTab, altDown: true, isPointerLocked: true));
+            Equal(false, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkEscape, altDown: true, isPointerLocked: true));
+            Equal(true, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkLWin, altDown: false, isPointerLocked: true));
+            Equal(true, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkRWin, altDown: false, isPointerLocked: true));
+            Equal(true, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkApps, altDown: false, isPointerLocked: true));
+            Equal(false, SessionInputPolicy.ShouldForwardSystemKeyToRemote(SessionInputPolicy.VkLWin, altDown: false, isPointerLocked: false));
+
+            // Toolbar click arms without locking; hotkey toggle locks only if cursor is inside video viewport.
+            Equal(false, SessionInputPolicy.ShouldAutoLockOnModeSwitch(fromToolbarButton: true, cursorInsideVideoViewport: true));
+            Equal(false, SessionInputPolicy.ShouldAutoLockOnModeSwitch(fromToolbarButton: true, cursorInsideVideoViewport: false));
+            Equal(true, SessionInputPolicy.ShouldAutoLockOnModeSwitch(fromToolbarButton: false, cursorInsideVideoViewport: true));
+            Equal(false, SessionInputPolicy.ShouldAutoLockOnModeSwitch(fromToolbarButton: false, cursorInsideVideoViewport: false));
+        }),
+
+        ("PeerSessionLeaseTracker and RemoteControlLockPolicy enforce mutual exclusion and lease expiry", () =>
+        {
+            var tracker = new PeerSessionLeaseTracker(leaseTtlSeconds: 30);
+
+            // First controller claims session cleanly.
+            var c1 = tracker.TryClaim("sess-1", "dev-a", "PC-A", nowUtc: 1000);
+            Equal(true, c1.Ok);
+            var snap1 = tracker.GetSnapshot(nowUtc: 1010);
+            Equal(true, snap1.IsBeingControlled);
+            Equal(false, snap1.IsControllingOther);
+            Equal("PC-A", snap1.ControlledByName);
+
+            // Same session renewing heartbeat succeeds.
+            var c1Renew = tracker.TryClaim("sess-1", "dev-a", "PC-A", nowUtc: 1015);
+            Equal(true, c1Renew.Ok);
+
+            // Second controller is blocked while sess-1 is active.
+            var c2 = tracker.TryClaim("sess-2", "dev-c", "PC-C", nowUtc: 1020);
+            Equal(false, c2.Ok);
+            Equal("HOST_BEING_CONTROLLED", c2.ErrorCode);
+
+            // Release frees the host.
+            tracker.Release("sess-1");
+            Equal(false, tracker.GetSnapshot(nowUtc: 1021).IsBeingControlled);
+
+            // TTL expiry also frees stale lease.
+            Equal(true, tracker.TryClaim("sess-3", "dev-c", "PC-C", nowUtc: 2000).Ok);
+            Equal(true, tracker.GetSnapshot(nowUtc: 2029).IsBeingControlled);
+            Equal(false, tracker.GetSnapshot(nowUtc: 2031).IsBeingControlled);
+            Equal(true, tracker.TryClaim("sess-4", "dev-a", "PC-A", nowUtc: 2031).Ok);
+            tracker.Release("sess-4");
+
+            // Controlling another device prevents incoming remote control.
+            tracker.SetControllingOther(true);
+            var whileControlling = tracker.TryClaim("sess-5", "dev-b", "PC-B", nowUtc: 2040);
+            Equal(false, whileControlling.Ok);
+            Equal("HOST_IS_CONTROLLING", whileControlling.ErrorCode);
+            tracker.SetControllingOther(false);
+            Equal(true, tracker.TryClaim("sess-5", "dev-b", "PC-B", nowUtc: 2041).Ok);
+
+            // RemoteControlLockPolicy checks.
+            Equal(DeviceRemoteControlStatus.Idle, RemoteControlLockPolicy.ParseStatus(null));
+            Equal(DeviceRemoteControlStatus.BeingControlled, RemoteControlLockPolicy.ParseStatus("controlled"));
+            Equal(DeviceRemoteControlStatus.Controlling, RemoteControlLockPolicy.ParseStatus("controlling"));
+
+            Equal(true, RemoteControlLockPolicy.CanInitiateConnection(DeviceRemoteControlStatus.Idle, false, out _));
+            Equal(true, RemoteControlLockPolicy.CanInitiateConnection(DeviceRemoteControlStatus.BeingControlled, isControlledByLocal: true, out _));
+            Equal(false, RemoteControlLockPolicy.CanInitiateConnection(DeviceRemoteControlStatus.BeingControlled, isControlledByLocal: false, out var reason1));
+            Equal(true, !string.IsNullOrEmpty(reason1));
+            Equal(false, RemoteControlLockPolicy.CanInitiateConnection(DeviceRemoteControlStatus.Controlling, isControlledByLocal: false, out var reason2));
+            Equal(true, !string.IsNullOrEmpty(reason2));
+        }),
+
+        ("AgentPeerServer + AgentPeerClient enforce session claim/release, busy /info, and pair rejection", () =>
+        {
+            const string authKey = "lock-test-auth-key-0123456789abcdef";
+            var tracker = new PeerSessionLeaseTracker();
+            var state = new AgentPeerServerState("dev-host", "HOST-PC", true, 47989, authKey, false, null, null);
+            using var server = new AgentPeerServer(() => state, (_, _, _) => Task.FromResult((true, "ok")), null, tracker);
+            using var bridge = new PeerServerBridgeHandler(server);
+            using var client = new AgentPeerClient(bridge);
+
+            // Claim by sess-1 succeeds and updates /agent/v1/info.
+            var claim1 = client.ClaimSessionAsync("10.126.126.5", 47999, authKey, "sess-1", "dev-ctrl1", "CTRL-1").GetAwaiter().GetResult();
+            Equal(true, claim1.Ok);
+
+            var (infoOk, info, _) = client.GetInfoAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+            Equal(true, infoOk);
+            Equal(true, info?.IsBeingControlled);
+            Equal(false, info?.IsControllingOther);
+            Equal("CTRL-1", info?.ControlledByName);
+
+            // Second client claim and pair are rejected with busy error.
+            var claim2 = client.ClaimSessionAsync("10.126.126.5", 47999, authKey, "sess-2", "dev-ctrl2", "CTRL-2").GetAwaiter().GetResult();
+            Equal(false, claim2.Ok);
+            Equal("HOST_BEING_CONTROLLED", claim2.Error);
+
+            var pairBusy = client.SubmitPairPinAsync("10.126.126.5", 47999, authKey, "1234", "CTRL-2").GetAwaiter().GetResult();
+            Equal(false, pairBusy.Ok);
+            Equal("HOST_BEING_CONTROLLED", pairBusy.Error);
+
+            // Release frees the host, then controlling state blocks claims with HOST_IS_CONTROLLING.
+            client.ReleaseSessionAsync("10.126.126.5", 47999, authKey, "sess-1").GetAwaiter().GetResult();
+            var (_, infoAfterRel, _) = client.GetInfoAsync("10.126.126.5", 47999, authKey).GetAwaiter().GetResult();
+            Equal(false, infoAfterRel?.IsBeingControlled);
+
+            tracker.SetControllingOther(true);
+            var claimWhileControlling = client.ClaimSessionAsync("10.126.126.5", 47999, authKey, "sess-3", "dev-ctrl2", "CTRL-2").GetAwaiter().GetResult();
+            Equal(false, claimWhileControlling.Ok);
+            Equal("HOST_IS_CONTROLLING", claimWhileControlling.Error);
+        }),
+
+        ("SyncApiClient handles /api/v1/sessions acquire (200/409/404), release, and RemoteControlState parsing", () =>
+        {
+            var mode = "ok";
+            using var handler = new DelegateHttpHandler((req, _) =>
+            {
+                if (req.RequestUri!.AbsolutePath == "/api/v1/sessions/acquire")
+                {
+                    if (mode == "conflict")
+                    {
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)
+                        {
+                            Content = new StringContent("""{"error":"TARGET_BEING_CONTROLLED","message":"目标设备当前正被其他设备远控，暂不可连接。"}""", Encoding.UTF8, "application/json"),
+                        });
+                    }
+                    if (mode == "notfound")
+                    {
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
+                        {
+                            Content = new StringContent("""{"error":"NOT_FOUND","message":"接口不存在。"}""", Encoding.UTF8, "application/json"),
+                        });
+                    }
+
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                            {
+                              "ok": true,
+                              "sessionId": "s-1",
+                              "serverTimeUtc": 1750000000,
+                              "devices": [
+                                {
+                                  "id": "d1",
+                                  "deviceKey": "dev-b",
+                                  "name": "PC-B",
+                                  "hostname": "PC-B",
+                                  "virtualIpv4": "10.126.126.3",
+                                  "sunshineReady": true,
+                                  "sunshinePort": 47989,
+                                  "agentPort": 47999,
+                                  "securityPinRequired": false,
+                                  "lastSeenAtUtc": 1750000000,
+                                  "isOnline": true,
+                                  "remoteControlState": "controlled",
+                                  "controlledByDeviceKey": "dev-a",
+                                  "controlledByDeviceName": "PC-A"
+                                }
+                              ]
+                            }
+                            """, Encoding.UTF8, "application/json"),
+                    });
+                }
+
+                if (req.RequestUri!.AbsolutePath == "/api/v1/sessions/release")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"ok":true,"devices":[],"serverTimeUtc":1750000005}""", Encoding.UTF8, "application/json"),
+                    });
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            });
+
+            var api = new SyncApiClient(handler);
+            var acq = api.AcquireRemoteSessionAsync("https://sync.example.com:11020", "tok", "s-1", "dev-a", "dev-b", null).GetAwaiter().GetResult();
+            Equal(true, acq.Ok);
+            Equal(false, acq.UnsupportedByServer);
+            Equal(1, acq.Devices?.Count ?? 0);
+            Equal("controlled", acq.Devices![0].RemoteControlState);
+            Equal("PC-A", acq.Devices![0].ControlledByDeviceName);
+
+            mode = "conflict";
+            var conflict = api.AcquireRemoteSessionAsync("https://sync.example.com:11020", "tok", "s-2", "dev-c", "dev-b", null).GetAwaiter().GetResult();
+            Equal(false, conflict.Ok);
+            Equal("TARGET_BEING_CONTROLLED", conflict.ErrorCode);
+
+            mode = "notfound";
+            var compat = api.AcquireRemoteSessionAsync("https://sync.example.com:11020", "tok", "s-3", "dev-c", "dev-b", null).GetAwaiter().GetResult();
+            Equal(true, compat.Ok);
+            Equal(true, compat.UnsupportedByServer);
+
+            var rel = api.ReleaseRemoteSessionAsync("https://sync.example.com:11020", "tok", "s-1", "dev-a", null).GetAwaiter().GetResult();
+            Equal(true, rel.Ok);
+        }),
     ];
 
     private sealed class DelegateHttpHandler(

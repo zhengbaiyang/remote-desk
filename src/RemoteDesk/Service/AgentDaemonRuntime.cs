@@ -24,6 +24,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
     private readonly SyncApiClient _syncClient = new();
     private readonly bool _isSystemService;
     private readonly HostSystemOperations _hostOps;
+    private readonly PeerSessionLeaseTracker _sessionTracker = new();
 
     private AgentConfigDocument _config = new();
     private AgentPeerServer? _peerServer;
@@ -112,7 +113,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
     private void StartPeerServer()
     {
         _peerServer?.Dispose();
-        _peerServer = new AgentPeerServer(BuildPeerServerState, HandleRemotePairPinAsync, _hostOps.CreatePeerFeatureHandlers());
+        _peerServer = new AgentPeerServer(BuildPeerServerState, HandleRemotePairPinAsync, _hostOps.CreatePeerFeatureHandlers(), _sessionTracker);
         try
         {
             var port = _config.AgentPort > 0 ? _config.AgentPort : AgentIpcConstants.DefaultAgentPort;
@@ -497,6 +498,25 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 {
                     _configLock.Release();
                 }
+            }
+            case "set_controlling_state":
+            {
+                AgentSetControllingStatePayload? payload;
+                try
+                {
+                    payload = string.IsNullOrWhiteSpace(req.PayloadJson)
+                        ? null
+                        : JsonSerializer.Deserialize<AgentSetControllingStatePayload>(req.PayloadJson, IpcJsonOptions);
+                }
+                catch (JsonException)
+                {
+                    return new AgentIpcResponse(false, null, "状态载荷 JSON 无效。");
+                }
+                if (payload is null)
+                    return new AgentIpcResponse(false, null, "缺少状态载荷。");
+
+                _sessionTracker.SetControllingOther(payload.IsControlling);
+                return new AgentIpcResponse(true);
             }
             case "stop_self":
             {

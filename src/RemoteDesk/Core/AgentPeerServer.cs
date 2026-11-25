@@ -41,6 +41,7 @@ internal sealed class AgentPeerServer : IDisposable
     private readonly Func<AgentPeerServerState> _getState;
     private readonly Func<string, string, string?, CancellationToken, Task<(bool Success, string Message, string? ErrorCode)>> _submitPinCallback;
     private readonly AgentPeerFeatureHandlers _featureHandlers;
+    private readonly PeerSessionLeaseTracker _sessionTracker;
     private readonly AgentHmacAuth _hmacAuth = new();
 
     private TcpListener? _listener;
@@ -50,7 +51,8 @@ internal sealed class AgentPeerServer : IDisposable
     public AgentPeerServer(
         Func<AgentPeerServerState> getState,
         Func<string, string, CancellationToken, Task<(bool Success, string Message)>> submitPinCallback,
-        AgentPeerFeatureHandlers? featureHandlers = null)
+        AgentPeerFeatureHandlers? featureHandlers = null,
+        PeerSessionLeaseTracker? sessionTracker = null)
         : this(
             getState,
             async (pin, clientName, _, ct) =>
@@ -58,7 +60,8 @@ internal sealed class AgentPeerServer : IDisposable
                 var (ok, msg) = await submitPinCallback(pin, clientName, ct).ConfigureAwait(false);
                 return (ok, msg, ok ? null : "SUNSHINE_PAIR_FAILED");
             },
-            featureHandlers)
+            featureHandlers,
+            sessionTracker)
     {
         ArgumentNullException.ThrowIfNull(submitPinCallback);
     }
@@ -66,14 +69,17 @@ internal sealed class AgentPeerServer : IDisposable
     public AgentPeerServer(
         Func<AgentPeerServerState> getState,
         Func<string, string, string?, CancellationToken, Task<(bool Success, string Message, string? ErrorCode)>> submitPinCallbackWithIp,
-        AgentPeerFeatureHandlers? featureHandlers = null)
+        AgentPeerFeatureHandlers? featureHandlers = null,
+        PeerSessionLeaseTracker? sessionTracker = null)
     {
         _getState = getState ?? throw new ArgumentNullException(nameof(getState));
         _submitPinCallback = submitPinCallbackWithIp ?? throw new ArgumentNullException(nameof(submitPinCallbackWithIp));
         _featureHandlers = featureHandlers ?? new AgentPeerFeatureHandlers();
+        _sessionTracker = sessionTracker ?? new PeerSessionLeaseTracker();
     }
 
     public int BoundPort { get; private set; }
+    public PeerSessionLeaseTracker SessionTracker => _sessionTracker;
 
     public void Start(IPAddress bindAddress, int port)
     {
@@ -249,19 +255,63 @@ internal sealed class AgentPeerServer : IDisposable
 
         if (method == "GET" && path == "/agent/v1/info")
         {
+            var snap = _sessionTracker.GetSnapshot();
             var info = new AgentPeerInfoDto(
                 DeviceKey: state.DeviceKey,
                 Hostname: state.Hostname,
                 SunshineReady: state.SunshineReady,
                 SunshinePort: state.SunshinePort,
                 SecurityPinRequired: state.SecurityPinRequired,
-                AgentVersion: state.AgentVersion ?? typeof(AgentPeerServer).Assembly.GetName().Version?.ToString(3));
+                AgentVersion: state.AgentVersion ?? typeof(AgentPeerServer).Assembly.GetName().Version?.ToString(3),
+                IsBeingControlled: snap.IsBeingControlled,
+                IsControllingOther: snap.IsControllingOther,
+                ControlledByName: snap.ControlledByName);
             await WriteJsonResponseAsync(stream, 200, "OK", info, effectiveCt).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "POST" && path == "/agent/v1/session/claim")
+        {
+            var claimReq = TryDeserialize<AgentSessionClaimRequestDto>(body);
+            if (claimReq is null || string.IsNullOrWhiteSpace(claimReq.SessionId))
+            {
+                await WriteJsonResponseAsync(stream, 400, "Bad Request", new AgentSessionClaimResponseDto(false, "INVALID_SESSION", "远控会话标识无效。"), effectiveCt).ConfigureAwait(false);
+                return;
+            }
+
+            var decision = _sessionTracker.TryClaim(claimReq.SessionId.Trim(), claimReq.ControllerDeviceKey ?? "", claimReq.ControllerName ?? "");
+            await WriteJsonResponseAsync(
+                stream,
+                decision.Ok ? 200 : 409,
+                decision.Ok ? "OK" : "Conflict",
+                new AgentSessionClaimResponseDto(decision.Ok, decision.ErrorCode, decision.Message),
+                effectiveCt).ConfigureAwait(false);
+            return;
+        }
+
+        if (method == "POST" && path == "/agent/v1/session/release")
+        {
+            var relReq = TryDeserialize<AgentSessionReleaseRequestDto>(body);
+            if (relReq is not null && !string.IsNullOrWhiteSpace(relReq.SessionId))
+                _sessionTracker.Release(relReq.SessionId.Trim());
+            await WriteJsonResponseAsync(stream, 200, "OK", new AgentSessionClaimResponseDto(true, null, "已释放远控会话。"), effectiveCt).ConfigureAwait(false);
             return;
         }
 
         if (method == "POST" && path == "/agent/v1/pair")
         {
+            var snap = _sessionTracker.GetSnapshot();
+            if (snap.IsControllingOther)
+            {
+                await WriteJsonResponseAsync(stream, 409, "Conflict", new AgentPairResponseDto(false, "HOST_IS_CONTROLLING", "目标设备当前正在远控其他设备，暂不可被远控。"), effectiveCt).ConfigureAwait(false);
+                return;
+            }
+            if (snap.IsBeingControlled)
+            {
+                await WriteJsonResponseAsync(stream, 409, "Conflict", new AgentPairResponseDto(false, "HOST_BEING_CONTROLLED", $"目标设备当前正被「{snap.ControlledByName ?? "其他设备"}」远控，暂不可配对或连接。"), effectiveCt).ConfigureAwait(false);
+                return;
+            }
+
             AgentPairRequestDto? pairReq = TryDeserialize<AgentPairRequestDto>(body);
             if (pairReq is null ||
                 string.IsNullOrWhiteSpace(pairReq.Pin) ||

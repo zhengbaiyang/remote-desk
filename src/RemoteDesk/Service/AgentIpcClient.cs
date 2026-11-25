@@ -79,6 +79,13 @@ internal static class AgentIpcClient
         }
     }
 
+    public static async Task<bool> TrySetControllingStateAsync(bool isControlling, CancellationToken ct = default)
+    {
+        var payloadJson = JsonSerializer.Serialize(new AgentSetControllingStatePayload(isControlling), JsonOptions);
+        var resp = await SendAsync(new AgentIpcRequest("set_controlling_state", payloadJson), ct).ConfigureAwait(false);
+        return resp.Ok;
+    }
+
     public static async Task<bool> TryRequestServiceStopAsync(CancellationToken ct = default)
     {
         var resp = await SendAsync(new AgentIpcRequest("stop_self"), ct).ConfigureAwait(false);

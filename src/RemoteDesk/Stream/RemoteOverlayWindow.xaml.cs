@@ -11,9 +11,11 @@ public partial class RemoteOverlayWindow : Window
 {
     private readonly DispatcherTimer _barAutoHideTimer = new() { Interval = TimeSpan.FromMilliseconds(1500) };
     private readonly DispatcherTimer _toastTimer = new() { Interval = TimeSpan.FromMilliseconds(2600) };
+    private readonly DispatcherTimer _lockHintDimTimer = new() { Interval = TimeSpan.FromMilliseconds(3500) };
     private bool _isFullscreen;
     private bool _isExternalPopupOpen;
     private bool _isGameMode;
+    private bool _isPointerLocked;
     private int _barAnimGen;
     private int _toastAnimGen;
 
@@ -33,11 +35,19 @@ public partial class RemoteOverlayWindow : Window
             _toastTimer.Stop();
             HideToastAnimated();
         };
+
+        _lockHintDimTimer.Tick += (_, _) =>
+        {
+            _lockHintDimTimer.Stop();
+            if (_isPointerLocked && LockHintBanner.Visibility == Visibility.Visible)
+                LockHintBanner.BeginAnimation(OpacityProperty, new DoubleAnimation(0.62, TimeSpan.FromMilliseconds(280)));
+        };
     }
 
     internal event Action<ControlInputMode>? InputModeRequested;
     internal event Action<FrameworkElement>? QualityMenuRequested;
     internal event Action<FrameworkElement>? HotkeysMenuRequested;
+    internal event Action<FrameworkElement>? HelpMenuRequested;
     internal event Action? FileUploadRequested;
     internal event Action? ClipboardSyncToggleRequested;
     internal event Action? PrivacyToggleRequested;
@@ -47,6 +57,9 @@ public partial class RemoteOverlayWindow : Window
     internal event Action? ExitFullscreenRequested;
     internal event Action? DisconnectRequested;
     internal event Action? RetryRequested;
+
+    public FrameworkElement FullscreenMenuAnchor =>
+        FullscreenExpandedBar.Visibility == Visibility.Visible ? FsHelpBtn : FullscreenPullTab;
 
     public bool IsExternalPopupOpen
     {
@@ -73,6 +86,7 @@ public partial class RemoteOverlayWindow : Window
         _barAutoHideTimer.Stop();
         FullscreenBarRoot.Visibility = isFullscreen ? Visibility.Visible : Visibility.Collapsed;
         CollapseFullscreenBar(immediate: true);
+        UpdateLockHintBannerLayout();
     }
 
     public void SetTelemetryHudVisible(bool visible)
@@ -81,12 +95,53 @@ public partial class RemoteOverlayWindow : Window
         FsHudBtn.Tag = visible ? "Selected" : null;
     }
 
-    internal void SetInputMode(ControlInputMode mode)
+    internal void SetInputMode(ControlInputMode mode) => SetPointerLockState(mode, _isPointerLocked);
+
+    internal void SetPointerLockState(ControlInputMode mode, bool isPointerLocked)
     {
         _isGameMode = mode == ControlInputMode.GameRelativeLock;
+        _isPointerLocked = isPointerLocked;
+
         FsOfficeModeBtn.Tag = _isGameMode ? null : "Selected";
         FsGameModeBtn.Tag = _isGameMode ? "Selected" : null;
         UpdateFsModeIndicator(animate: IsLoaded && FullscreenExpandedBar.Visibility == Visibility.Visible);
+
+        FullscreenBarRoot.IsHitTestVisible = !isPointerLocked;
+        if (isPointerLocked && FullscreenExpandedBar.Visibility == Visibility.Visible)
+        {
+            _barAutoHideTimer.Stop();
+            CollapseFullscreenBar(immediate: true);
+        }
+
+        _lockHintDimTimer.Stop();
+        LockHintBanner.BeginAnimation(OpacityProperty, null);
+
+        if (!_isGameMode)
+        {
+            LockHintBanner.Visibility = Visibility.Collapsed;
+        }
+        else if (!isPointerLocked)
+        {
+            LockHintDot.Fill = (Brush)FindResource("WarningBrush");
+            LockHintText.Text = "游戏锁定已就绪 · 点击画面锁鼠 · 按 Ctrl+Alt 返回办公自由";
+            LockHintBanner.Opacity = 1.0;
+            LockHintBanner.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            LockHintDot.Fill = (Brush)FindResource("AccentBrush");
+            LockHintText.Text = "已锁定鼠标 · 按 Ctrl+Alt 释放 · Ctrl+Alt+Shift+Q 断开 · F11 全屏";
+            LockHintBanner.Opacity = 1.0;
+            LockHintBanner.Visibility = Visibility.Visible;
+            _lockHintDimTimer.Start();
+        }
+
+        UpdateLockHintBannerLayout();
+    }
+
+    private void UpdateLockHintBannerLayout()
+    {
+        LockHintBanner.Margin = new Thickness(0, _isFullscreen ? 42 : 12, 0, 0);
     }
 
     private void FsModeTrackGridSizeChanged(object sender, SizeChangedEventArgs e) =>
@@ -186,7 +241,7 @@ public partial class RemoteOverlayWindow : Window
         FsStatusDot.Fill = dotBrush;
     }
 
-    public void ShowToast(string message)
+    public void ShowToast(string message, int durationMs = 2600)
     {
         if (string.IsNullOrWhiteSpace(message))
             return;
@@ -204,6 +259,7 @@ public partial class RemoteOverlayWindow : Window
         ToastSlide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0.0, TimeSpan.FromMilliseconds(160)) { EasingFunction = ease });
 
         _toastTimer.Stop();
+        _toastTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(durationMs, 1000, 10000));
         _toastTimer.Start();
         _ = gen;
     }
@@ -295,7 +351,13 @@ public partial class RemoteOverlayWindow : Window
 
     private void PullTabMouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
-        if (_isFullscreen)
+        if (_isFullscreen && !_isPointerLocked)
+            ExpandFullscreenBar();
+    }
+
+    private void PullTabMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_isFullscreen && !_isPointerLocked)
             ExpandFullscreenBar();
     }
 
@@ -314,6 +376,7 @@ public partial class RemoteOverlayWindow : Window
     private void GameModeClicked(object sender, RoutedEventArgs e) => InputModeRequested?.Invoke(ControlInputMode.GameRelativeLock);
     private void QualityClicked(object sender, RoutedEventArgs e) => QualityMenuRequested?.Invoke(FsQualityBtn);
     private void HotkeysClicked(object sender, RoutedEventArgs e) => HotkeysMenuRequested?.Invoke(FsHotkeysBtn);
+    private void HelpClicked(object sender, RoutedEventArgs e) => HelpMenuRequested?.Invoke(FsHelpBtn);
     private void FileUploadClicked(object sender, RoutedEventArgs e) => FileUploadRequested?.Invoke();
     private void ClipboardSyncClicked(object sender, RoutedEventArgs e) => ClipboardSyncToggleRequested?.Invoke();
     private void PrivacyClicked(object sender, RoutedEventArgs e) => PrivacyToggleRequested?.Invoke();

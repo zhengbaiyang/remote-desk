@@ -306,6 +306,102 @@ class SyncServiceTests(unittest.TestCase):
         limiter.clear("1.2.3.4")
         self.assertFalse(limiter.is_blocked("1.2.3.4"))
 
+    def test_remote_session_exclusivity_and_device_status(self) -> None:
+        status, reg = self._request(
+            "POST",
+            "/api/v1/auth/register",
+            {"username": "SessionOwner", "password": "password123", "inviteCode": "INVITE-2026"},
+        )
+        self.assertEqual(201, status)
+        token = str(reg["token"])
+
+        for key, name in [("dev-a", "PC-A"), ("dev-b", "PC-B"), ("dev-c", "PC-C")]:
+            s, _ = self._request(
+                "POST",
+                "/api/v1/devices/checkin",
+                {"deviceKey": key, "name": name, "hostname": name, "sunshineReady": True},
+                token=token,
+            )
+            self.assertEqual(200, s)
+
+        # A acquires lock on B
+        status, acq = self._request(
+            "POST",
+            "/api/v1/sessions/acquire",
+            {"sessionId": "sess-1", "controllerDeviceKey": "dev-a", "targetDeviceKey": "dev-b"},
+            token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(acq["ok"])
+        by_key = {d["deviceKey"]: d for d in acq["devices"]}
+        self.assertEqual("controlled", by_key["dev-b"]["remoteControlState"])
+        self.assertEqual("dev-a", by_key["dev-b"]["controlledByDeviceKey"])
+        self.assertEqual("PC-A", by_key["dev-b"]["controlledByDeviceName"])
+        self.assertEqual("controlling", by_key["dev-a"]["remoteControlState"])
+        self.assertEqual("dev-b", by_key["dev-a"]["controllingTargetDeviceKey"])
+        self.assertEqual("idle", by_key["dev-c"]["remoteControlState"])
+
+        # Same sessionId heartbeat/re-acquire succeeds
+        status, hb = self._request(
+            "POST",
+            "/api/v1/sessions/heartbeat",
+            {"sessionId": "sess-1", "controllerDeviceKey": "dev-a", "targetDeviceKey": "dev-b"},
+            token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(hb["ok"])
+
+        # C trying to control B -> 409 TARGET_BEING_CONTROLLED
+        status, err_b = self._request(
+            "POST",
+            "/api/v1/sessions/acquire",
+            {"sessionId": "sess-2", "controllerDeviceKey": "dev-c", "targetDeviceKey": "dev-b"},
+            token=token,
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("TARGET_BEING_CONTROLLED", err_b["error"])
+
+        # C trying to control A (which is currently controlling B) -> 409 TARGET_IS_CONTROLLING
+        status, err_a = self._request(
+            "POST",
+            "/api/v1/sessions/acquire",
+            {"sessionId": "sess-3", "controllerDeviceKey": "dev-c", "targetDeviceKey": "dev-a"},
+            token=token,
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("TARGET_IS_CONTROLLING", err_a["error"])
+
+        # B trying to control A -> 409 TARGET_IS_CONTROLLING
+        status, err_ba = self._request(
+            "POST",
+            "/api/v1/sessions/acquire",
+            {"sessionId": "sess-4", "controllerDeviceKey": "dev-b", "targetDeviceKey": "dev-a"},
+            token=token,
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("TARGET_IS_CONTROLLING", err_ba["error"])
+
+        # Release returns both A and B to idle, and C can now acquire B
+        status, rel = self._request(
+            "POST",
+            "/api/v1/sessions/release",
+            {"sessionId": "sess-1", "controllerDeviceKey": "dev-a"},
+            token=token,
+        )
+        self.assertEqual(200, status)
+        by_key_after = {d["deviceKey"]: d for d in rel["devices"]}
+        self.assertEqual("idle", by_key_after["dev-a"]["remoteControlState"])
+        self.assertEqual("idle", by_key_after["dev-b"]["remoteControlState"])
+
+        status, acq_c = self._request(
+            "POST",
+            "/api/v1/sessions/acquire",
+            {"sessionId": "sess-5", "controllerDeviceKey": "dev-c", "targetDeviceKey": "dev-b"},
+            token=token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(acq_c["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

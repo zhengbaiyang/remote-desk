@@ -22,6 +22,7 @@ public partial class MainWindow
     private bool isRegisterMode;
     private bool isAccountBusy;
     private bool isSilentBootstrapRunning;
+    private bool wasAccountLoggedIn;
     private DeviceListItem? pendingSecurityPinItem;
 
     private void InitializeAccount()
@@ -468,7 +469,7 @@ public partial class MainWindow
             SyncEasyTierFormFromSettings();
 
             var selectedKey = (DeviceList.SelectedItem as DeviceListItem)?.UniqueKey;
-            RefreshDevices(DeviceList.SelectedIndex, selectedKey);
+            RefreshDevices(DeviceList.SelectedIndex, selectedKey, preserveTransientUi: !userInitiated);
             await RefreshEasyTierStatusAsync();
 
             if (userInitiated)
@@ -663,7 +664,8 @@ public partial class MainWindow
             RailAccountDot.Opacity = 1.0;
             MotionBehaviors.SetEnablePulse(RailAccountDot, true);
 
-            ManualEasyTierExpander.IsExpanded = false;
+            if (loggedIn && !wasAccountLoggedIn)
+                ManualEasyTierExpander.IsExpanded = false;
         }
         else
         {
@@ -675,6 +677,7 @@ public partial class MainWindow
             RailAccountDot.Opacity = 0.5;
         }
 
+        wasAccountLoggedIn = loggedIn;
         RefreshDaemonServiceUi();
     }
 
@@ -756,6 +759,44 @@ public partial class MainWindow
     }
 
     private readonly Dictionary<string, RemoteSessionWindow> activeStreamWindows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> activeStreamDeviceKeys = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool IsHostControlledByLocal(string? hostAddress, string? deviceKey) =>
+        (!string.IsNullOrWhiteSpace(hostAddress) && activeStreamWindows.ContainsKey(hostAddress)) ||
+        (!string.IsNullOrWhiteSpace(deviceKey) && activeStreamDeviceKeys.Contains(deviceKey));
+
+    private void UpdateLocalControllingState(bool isControlling)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        localHostPeerHost?.SetControllingState(isControlling);
+        _ = AgentIpcClient.TrySetControllingStateAsync(isControlling);
+    }
+
+    private RemoteSessionLockContext BuildSessionLockContext(SyncedDeviceInfo? synced)
+    {
+        var localKey = EnsureLocalDeviceKeyPersisted();
+        var localName = HostServiceManager.GetLocalNetworkInfo().HostName;
+        var acc = settings.Account;
+        string? token = null;
+        if (!string.IsNullOrEmpty(acc?.ProtectedSessionToken))
+            SecretProtector.TryUnprotect(acc.ProtectedSessionToken, out token);
+
+        return new RemoteSessionLockContext(
+            LocalDeviceKey: localKey,
+            LocalDeviceName: localName,
+            TargetDeviceKey: synced?.DeviceKey,
+            SyncServerUrl: IsAccountLoggedIn() ? acc?.ServerUrl : null,
+            SyncSessionToken: token,
+            SyncServerCertThumbprint: acc?.ServerCertThumbprint,
+            OnSyncedDevicesUpdated: updated => Dispatcher.BeginInvoke(() =>
+            {
+                syncedDevices = updated;
+                var selectedKey = (DeviceList.SelectedItem as DeviceListItem)?.UniqueKey;
+                RefreshDevices(DeviceList.SelectedIndex, selectedKey, preserveTransientUi: true);
+            }));
+    }
 
     private string ResolveLinkTypeHint(string targetHost, SyncedDeviceInfo? synced)
     {
@@ -801,8 +842,11 @@ public partial class MainWindow
             return;
         }
 
-        var linkHint = ResolveLinkTypeHint(targetHost, listItem?.SyncedDevice);
-        var peerContext = BuildPeerSessionContext(listItem?.SyncedDevice);
+        var synced = listItem?.SyncedDevice;
+        var targetDeviceKey = synced?.DeviceKey;
+        var linkHint = ResolveLinkTypeHint(targetHost, synced);
+        var peerContext = BuildPeerSessionContext(synced);
+        var lockContext = BuildSessionLockContext(synced);
         var sessionWindow = new RemoteSessionWindow(
             device,
             targetHost,
@@ -820,10 +864,25 @@ public partial class MainWindow
                 catch
                 {
                 }
-            }));
+            }),
+            lockContext);
 
         activeStreamWindows[targetHost] = sessionWindow;
-        sessionWindow.Closed += (_, _) => activeStreamWindows.Remove(targetHost);
+        if (!string.IsNullOrWhiteSpace(targetDeviceKey))
+            activeStreamDeviceKeys.Add(targetDeviceKey);
+        UpdateLocalControllingState(isControlling: true);
+        RefreshDevices(DeviceList.SelectedIndex, SelectedListItem?.UniqueKey, preserveTransientUi: true);
+
+        sessionWindow.Closed += (_, _) =>
+        {
+            activeStreamWindows.Remove(targetHost);
+            if (!string.IsNullOrWhiteSpace(targetDeviceKey))
+                activeStreamDeviceKeys.Remove(targetDeviceKey);
+            UpdateLocalControllingState(isControlling: activeStreamWindows.Count > 0);
+            RefreshDevices(DeviceList.SelectedIndex, SelectedListItem?.UniqueKey, preserveTransientUi: true);
+            if (IsAccountLoggedIn())
+                _ = SafeBackgroundSyncTickAsync();
+        };
         sessionWindow.Show();
         sessionWindow.Activate();
         ShowStatus($"已打开内置高刷控制窗口 -> {device.Name} ({targetHost})（窗口化 · 按 F11 全屏）。");
@@ -854,7 +913,7 @@ public partial class MainWindow
                 SaveSettings(settings with { Devices = devices, DefaultStream = nextOptions });
             }
 
-            RefreshDevices(DeviceList.SelectedIndex, SelectedListItem?.UniqueKey);
+            RefreshDevices(DeviceList.SelectedIndex, SelectedListItem?.UniqueKey, preserveTransientUi: true);
         }
         catch
         {
@@ -866,6 +925,15 @@ public partial class MainWindow
 
     private async Task ConnectSyncedOrAutoPairDeviceAsync(DeviceListItem item, string? securityPin, bool forcePair)
     {
+        var lockStatus = item.IsBeingControlled
+            ? DeviceRemoteControlStatus.BeingControlled
+            : (item.IsControllingOther ? DeviceRemoteControlStatus.Controlling : DeviceRemoteControlStatus.Idle);
+        if (!RemoteControlLockPolicy.CanInitiateConnection(lockStatus, item.IsControlledByLocal, out var blockReason))
+        {
+            ShowStatus(blockReason!, warning: true);
+            return;
+        }
+
         if (!NativeStreamBridge.IsAvailable())
         {
             ShowStatus("未检测到内置原生控屏引擎 RemoteDesk.StreamCore.dll，请检查客户端安装。", warning: true);

@@ -167,6 +167,21 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
                 self._handle_checkin(user)
                 return
 
+            if method == "POST" and path == "/api/v1/sessions/acquire":
+                user = self._require_user()
+                self._handle_session_acquire(user, is_heartbeat=False)
+                return
+
+            if method == "POST" and path == "/api/v1/sessions/heartbeat":
+                user = self._require_user()
+                self._handle_session_acquire(user, is_heartbeat=True)
+                return
+
+            if method == "POST" and path == "/api/v1/sessions/release":
+                user = self._require_user()
+                self._handle_session_release(user)
+                return
+
             if method == "GET" and path == "/api/v1/devices":
                 user = self._require_user()
                 devices, now_ts = self.server.db.list_devices(user.id)
@@ -305,6 +320,60 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "device": device,
+                "devices": devices,
+                "serverTimeUtc": now_ts,
+            },
+        )
+
+    def _handle_session_acquire(self, user: UserRecord, *, is_heartbeat: bool) -> None:
+        body = self._read_json_body()
+        session_id = sanitize_optional_str(body.get("sessionId"), 64)
+        if not session_id:
+            raise ValidationError("INVALID_SESSION_ID", "会话标识无效。")
+        controller_key = validate_device_key(body.get("controllerDeviceKey"))
+        target_key = validate_device_key(body.get("targetDeviceKey"))
+        if controller_key == target_key:
+            raise ValidationError("INVALID_SESSION_TARGET", "不能由本机远控本机。")
+
+        if is_heartbeat:
+            devices, now_ts = self.server.db.heartbeat_remote_session(
+                user_id=user.id,
+                session_id=session_id,
+                controller_device_key=controller_key,
+                target_device_key=target_key,
+            )
+        else:
+            devices, now_ts = self.server.db.acquire_remote_session(
+                user_id=user.id,
+                session_id=session_id,
+                controller_device_key=controller_key,
+                target_device_key=target_key,
+            )
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "sessionId": session_id,
+                "devices": devices,
+                "serverTimeUtc": now_ts,
+            },
+        )
+
+    def _handle_session_release(self, user: UserRecord) -> None:
+        body = self._read_json_body()
+        session_id = sanitize_optional_str(body.get("sessionId"), 64)
+        if not session_id:
+            raise ValidationError("INVALID_SESSION_ID", "会话标识无效。")
+        controller_key = validate_device_key(body.get("controllerDeviceKey"))
+        devices, now_ts = self.server.db.release_remote_session(
+            user_id=user.id,
+            session_id=session_id,
+            controller_device_key=controller_key,
+        )
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
                 "devices": devices,
                 "serverTimeUtc": now_ts,
             },

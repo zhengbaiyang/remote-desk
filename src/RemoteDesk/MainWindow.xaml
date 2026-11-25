@@ -470,6 +470,18 @@
                                                 <Setter TargetName="ModePill" Property="Background" Value="{DynamicResource ReadySoft}" />
                                                 <Setter TargetName="ModePillText" Property="Foreground" Value="{DynamicResource Ready}" />
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsBeingControlled}" Value="True">
+                                                <Setter TargetName="ModePill" Property="Background" Value="{DynamicResource WarningSoft}" />
+                                                <Setter TargetName="ModePillText" Property="Foreground" Value="{DynamicResource Warning}" />
+                                                <Setter TargetName="CloudOnlineDot" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="CloudOnlineDot" Property="Fill" Value="{DynamicResource Warning}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsControllingOther}" Value="True">
+                                                <Setter TargetName="ModePill" Property="Background" Value="{DynamicResource WarningSoft}" />
+                                                <Setter TargetName="ModePillText" Property="Foreground" Value="{DynamicResource Warning}" />
+                                                <Setter TargetName="CloudOnlineDot" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="CloudOnlineDot" Property="Fill" Value="{DynamicResource Warning}" />
+                                            </DataTrigger>
                                             <MultiDataTrigger>
                                                 <MultiDataTrigger.Conditions>
                                                     <Condition Binding="{Binding IsCloudSynced}" Value="True" />
@@ -819,6 +831,36 @@
                                             <TextBlock x:Name="ActionTargetSummary" DockPanel.Dock="Right" FontSize="12"
                                                        Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
                                         </DockPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Remote Control Shortcut & Basic Operations Hints -->
+                                <Border Style="{StaticResource SubPanelCard}" Padding="16,12" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="远控操作与快捷键提示" FontSize="12.5" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource Ink}" Margin="0,0,0,8" />
+                                        <WrapPanel>
+                                            <Border Style="{StaticResource StatusPillBorder}" Background="{DynamicResource AccentSoft}" Margin="0,0,6,6">
+                                                <TextBlock Text="办公自由默认不锁鼠" FontSize="11.5" FontWeight="Medium" Foreground="{DynamicResource Accent}" />
+                                            </Border>
+                                            <Border Style="{StaticResource StatusPillBorder}" Margin="0,0,6,6">
+                                                <TextBlock Text="Ctrl+Alt 释放锁鼠" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                            </Border>
+                                            <Border Style="{StaticResource StatusPillBorder}" Margin="0,0,6,6">
+                                                <TextBlock Text="Ctrl+Alt+G 切换模式" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                            </Border>
+                                            <Border Style="{StaticResource StatusPillBorder}" Margin="0,0,6,6">
+                                                <TextBlock Text="F11 全屏" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                            </Border>
+                                            <Border Style="{StaticResource StatusPillBorder}" Margin="0,0,6,6">
+                                                <TextBlock Text="Ctrl+Alt+Shift+Q 断开" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                            </Border>
+                                            <Border Style="{StaticResource StatusPillBorder}" Margin="0,0,0,6">
+                                                <TextBlock Text="Ctrl+Alt+H 帮助" FontSize="11.5" Foreground="{DynamicResource Ink}" />
+                                            </Border>
+                                        </WrapPanel>
+                                        <TextBlock Text="连接后默认鼠标可自由移出画面；在游戏锁定模式下按 Ctrl+Alt 可随时释放，拖拽文件到画面即可快传。"
+                                                   FontSize="11.5" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,2,0,0" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

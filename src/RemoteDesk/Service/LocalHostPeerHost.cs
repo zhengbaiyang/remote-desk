@@ -20,6 +20,7 @@ internal sealed class LocalHostPeerHost : IDisposable
 
     private readonly HostSystemOperations _hostOps = new(isSystemService: false);
     private readonly SemaphoreSlim _provisionLock = new(1, 1);
+    private readonly PeerSessionLeaseTracker _sessionTracker = new();
 
     private AgentPeerServer? _server;
     private bool _hostModeEnabled;
@@ -32,6 +33,8 @@ internal sealed class LocalHostPeerHost : IDisposable
     private string? _securityPinHash;
 
     public bool IsListening => _server is not null;
+
+    public void SetControllingState(bool isControlling) => _sessionTracker.SetControllingOther(isControlling);
 
     public void Reconcile(
         bool shouldRun,
@@ -60,7 +63,7 @@ internal sealed class LocalHostPeerHost : IDisposable
 
         if (_server is null)
         {
-            var server = new AgentPeerServer(BuildState, HandlePairPinAsync, _hostOps.CreatePeerFeatureHandlers());
+            var server = new AgentPeerServer(BuildState, HandlePairPinAsync, _hostOps.CreatePeerFeatureHandlers(), _sessionTracker);
             try
             {
                 server.Start(IPAddress.Any, AgentIpcConstants.DefaultAgentPort);

@@ -18,6 +18,7 @@ from security import (
 )
 
 ONLINE_TTL_SECONDS = 90
+REMOTE_SESSION_TTL_SECONDS = 45
 SESSION_TTL_SECONDS = 90 * 24 * 3600
 
 
@@ -48,8 +49,13 @@ class UserRecord:
         }
 
 
-def _row_to_device_dict(row: sqlite3.Row, now_ts: int) -> dict[str, object]:
+def _row_to_device_dict(
+    row: sqlite3.Row,
+    now_ts: int,
+    session_info: dict[str, object] | None = None,
+) -> dict[str, object]:
     last_seen = int(row["last_seen_at"])
+    info = session_info or {}
     return {
         "id": row["id"],
         "deviceKey": row["device_key"],
@@ -66,6 +72,11 @@ def _row_to_device_dict(row: sqlite3.Row, now_ts: int) -> dict[str, object]:
         "osVersion": row["os_version"],
         "lastSeenAtUtc": last_seen,
         "isOnline": (now_ts - last_seen) <= ONLINE_TTL_SECONDS,
+        "remoteControlState": info.get("remoteControlState", "idle"),
+        "controlledByDeviceKey": info.get("controlledByDeviceKey"),
+        "controlledByDeviceName": info.get("controlledByDeviceName"),
+        "controllingTargetDeviceKey": info.get("controllingTargetDeviceKey"),
+        "controllingTargetDeviceName": info.get("controllingTargetDeviceName"),
     }
 
 
@@ -140,6 +151,16 @@ class SyncDatabase:
                 max_uses INTEGER NOT NULL DEFAULT 0,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS remote_sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                controller_device_key TEXT NOT NULL,
+                target_device_key TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                last_heartbeat_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
         )
@@ -431,25 +452,155 @@ class SyncDatabase:
                 self._conn.rollback()
                 raise
 
-            all_rows = self._conn.execute(
-                """
-                SELECT * FROM devices WHERE user_id = ? ORDER BY created_at ASC
-                """,
-                (user_id,),
-            ).fetchall()
-
-        devices = [_row_to_device_dict(r, now_ts) for r in all_rows]
+            devices = self._build_device_list_locked(user_id, now_ts)
         current = next(d for d in devices if d["id"] == device_id)
         return current, devices, now_ts
+
+    def _prune_expired_remote_sessions(self, now_ts: int) -> None:
+        cutoff = now_ts - REMOTE_SESSION_TTL_SECONDS
+        self._conn.execute(
+            "DELETE FROM remote_sessions WHERE last_heartbeat_at < ?",
+            (cutoff,),
+        )
+
+    def _build_device_list_locked(self, user_id: str, now_ts: int) -> list[dict[str, object]]:
+        cutoff = now_ts - REMOTE_SESSION_TTL_SECONDS
+        rows = self._conn.execute(
+            "SELECT * FROM devices WHERE user_id = ? ORDER BY created_at ASC",
+            (user_id,),
+        ).fetchall()
+        sessions = self._conn.execute(
+            """
+            SELECT controller_device_key, target_device_key
+            FROM remote_sessions
+            WHERE user_id = ? AND last_heartbeat_at >= ?
+            ORDER BY started_at ASC
+            """,
+            (user_id, cutoff),
+        ).fetchall()
+
+        name_by_key = {str(r["device_key"]): str(r["name"]) for r in rows}
+        controlled_by: dict[str, str] = {}
+        controlling_target: dict[str, str] = {}
+        for sess in sessions:
+            ctrl_key = str(sess["controller_device_key"])
+            tgt_key = str(sess["target_device_key"])
+            controlled_by.setdefault(tgt_key, ctrl_key)
+            controlling_target.setdefault(ctrl_key, tgt_key)
+
+        devices: list[dict[str, object]] = []
+        for row in rows:
+            dkey = str(row["device_key"])
+            info: dict[str, object] = {}
+            if dkey in controlled_by:
+                ctrl_key = controlled_by[dkey]
+                info = {
+                    "remoteControlState": "controlled",
+                    "controlledByDeviceKey": ctrl_key,
+                    "controlledByDeviceName": name_by_key.get(ctrl_key, ctrl_key),
+                    "controllingTargetDeviceKey": None,
+                    "controllingTargetDeviceName": None,
+                }
+            elif dkey in controlling_target:
+                tgt_key = controlling_target[dkey]
+                info = {
+                    "remoteControlState": "controlling",
+                    "controlledByDeviceKey": None,
+                    "controlledByDeviceName": None,
+                    "controllingTargetDeviceKey": tgt_key,
+                    "controllingTargetDeviceName": name_by_key.get(tgt_key, tgt_key),
+                }
+            devices.append(_row_to_device_dict(row, now_ts, info))
+        return devices
+
+    def acquire_remote_session(
+        self,
+        user_id: str,
+        session_id: str,
+        controller_device_key: str,
+        target_device_key: str,
+    ) -> tuple[list[dict[str, object]], int]:
+        now_ts = int(time.time())
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._prune_expired_remote_sessions(now_ts)
+                active_rows = self._conn.execute(
+                    """
+                    SELECT id, controller_device_key, target_device_key
+                    FROM remote_sessions
+                    WHERE user_id = ? AND id != ?
+                    """,
+                    (user_id, session_id),
+                ).fetchall()
+
+                for row in active_rows:
+                    if str(row["target_device_key"]) == target_device_key:
+                        raise StorageError(409, "TARGET_BEING_CONTROLLED", "目标设备当前正被其他设备远控，暂不可连接。")
+                    if str(row["controller_device_key"]) == target_device_key:
+                        raise StorageError(409, "TARGET_IS_CONTROLLING", "目标设备当前正在远控其他设备，暂不可被远控。")
+
+                existing_same = self._conn.execute(
+                    "SELECT id FROM remote_sessions WHERE id = ? AND user_id = ?",
+                    (session_id, user_id),
+                ).fetchone()
+                if existing_same is not None:
+                    self._conn.execute(
+                        """
+                        UPDATE remote_sessions
+                        SET last_heartbeat_at = ?
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (now_ts, session_id, user_id),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        INSERT INTO remote_sessions (
+                            id, user_id, controller_device_key, target_device_key, started_at, last_heartbeat_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (session_id, user_id, controller_device_key, target_device_key, now_ts, now_ts),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            devices = self._build_device_list_locked(user_id, now_ts)
+        return devices, now_ts
+
+    def heartbeat_remote_session(
+        self,
+        user_id: str,
+        session_id: str,
+        controller_device_key: str,
+        target_device_key: str,
+    ) -> tuple[list[dict[str, object]], int]:
+        return self.acquire_remote_session(user_id, session_id, controller_device_key, target_device_key)
+
+    def release_remote_session(
+        self,
+        user_id: str,
+        session_id: str,
+        controller_device_key: str,
+    ) -> tuple[list[dict[str, object]], int]:
+        now_ts = int(time.time())
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM remote_sessions WHERE user_id = ? AND id = ? AND controller_device_key = ?",
+                (user_id, session_id, controller_device_key),
+            )
+            self._conn.commit()
+            devices = self._build_device_list_locked(user_id, now_ts)
+        return devices, now_ts
 
     def list_devices(self, user_id: str) -> tuple[list[dict[str, object]], int]:
         now_ts = int(time.time())
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM devices WHERE user_id = ? ORDER BY created_at ASC",
-                (user_id,),
-            ).fetchall()
-        return [_row_to_device_dict(r, now_ts) for r in rows], now_ts
+            devices = self._build_device_list_locked(user_id, now_ts)
+        return devices, now_ts
 
     def rename_device(self, user_id: str, device_id: str, new_name: str) -> dict[str, object]:
         now_ts = int(time.time())
@@ -461,19 +612,26 @@ class SyncDatabase:
             self._conn.commit()
             if cur.rowcount == 0:
                 raise StorageError(404, "DEVICE_NOT_FOUND", "未找到该设备或无权操作。")
-            row = self._conn.execute(
-                "SELECT * FROM devices WHERE id = ? AND user_id = ?",
-                (device_id, user_id),
-            ).fetchone()
-        assert row is not None
-        return _row_to_device_dict(row, now_ts)
+            devices = self._build_device_list_locked(user_id, now_ts)
+        return next(d for d in devices if d["id"] == device_id)
 
     def delete_device(self, user_id: str, device_id: str) -> None:
         with self._lock:
+            row = self._conn.execute(
+                "SELECT device_key FROM devices WHERE id = ? AND user_id = ?",
+                (device_id, user_id),
+            ).fetchone()
             cur = self._conn.execute(
                 "DELETE FROM devices WHERE id = ? AND user_id = ?",
                 (device_id, user_id),
             )
-            self._conn.commit()
             if cur.rowcount == 0:
+                self._conn.commit()
                 raise StorageError(404, "DEVICE_NOT_FOUND", "未找到该设备或无权删除。")
+            if row is not None:
+                dkey = str(row["device_key"])
+                self._conn.execute(
+                    "DELETE FROM remote_sessions WHERE user_id = ? AND (controller_device_key = ? OR target_device_key = ?)",
+                    (user_id, dkey, dkey),
+                )
+            self._conn.commit()

@@ -113,6 +113,71 @@ internal sealed class AgentPeerClient : IDisposable
         }
     }
 
+    public async Task<AgentSessionClaimResponseDto> ClaimSessionAsync(
+        string targetHost,
+        int agentPort,
+        string agentAuthKey,
+        string sessionId,
+        string controllerDeviceKey,
+        string controllerName,
+        CancellationToken ct = default)
+    {
+        var baseUrl = BuildBaseUrl(targetHost, agentPort);
+        const string path = "/agent/v1/session/claim";
+        var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(
+            new AgentSessionClaimRequestDto(sessionId, controllerDeviceKey, controllerName),
+            JsonOptions);
+
+        try
+        {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(RequestTimeout);
+            using var req = BuildSignedRequest(HttpMethod.Post, baseUrl, path, bodyBytes, agentAuthKey);
+            using var resp = await _httpClient.SendAsync(req, reqCts.Token).ConfigureAwait(false);
+            var raw = await resp.Content.ReadAsStringAsync(reqCts.Token).ConfigureAwait(false);
+
+            if (resp.StatusCode == HttpStatusCode.NotFound)
+                return new AgentSessionClaimResponseDto(true, null, null, Unsupported: true);
+
+            var parsed = TryDeserialize<AgentSessionClaimResponseDto>(raw);
+            if (resp.StatusCode == HttpStatusCode.Conflict)
+                return new AgentSessionClaimResponseDto(false, parsed?.Error ?? "HOST_BUSY", parsed?.Message ?? "目标设备当前处于远控占用状态。");
+
+            if (!resp.IsSuccessStatusCode)
+                return new AgentSessionClaimResponseDto(false, parsed?.Error ?? $"HTTP_{(int)resp.StatusCode}", parsed?.Message ?? ExtractErrorMessage(raw, (int)resp.StatusCode));
+
+            return parsed ?? new AgentSessionClaimResponseDto(true);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return new AgentSessionClaimResponseDto(false, "NETWORK_ERROR", $"无法确认目标设备会话状态：{ex.Message}");
+        }
+    }
+
+    public async Task ReleaseSessionAsync(
+        string targetHost,
+        int agentPort,
+        string agentAuthKey,
+        string sessionId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            _ = await SendSignedJsonAsync<AgentSessionClaimResponseDto>(
+                HttpMethod.Post,
+                targetHost,
+                agentPort,
+                "/agent/v1/session/release",
+                new AgentSessionReleaseRequestDto(sessionId),
+                agentAuthKey,
+                TimeSpan.FromSeconds(4),
+                ct).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
     public async Task<(bool Ok, AgentClipboardDto? Clipboard, string? Error)> GetClipboardAsync(
         string targetHost,
         int agentPort,

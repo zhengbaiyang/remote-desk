@@ -126,13 +126,33 @@ internal sealed record AgentSubmitLocalPinPayload(
     string Pin,
     string ClientName);
 
+internal sealed record AgentSetControllingStatePayload(
+    bool IsControlling);
+
 internal sealed record AgentPeerInfoDto(
     string DeviceKey,
     string Hostname,
     bool SunshineReady,
     int SunshinePort,
     bool SecurityPinRequired,
-    string? AgentVersion = null);
+    string? AgentVersion = null,
+    bool IsBeingControlled = false,
+    bool IsControllingOther = false,
+    string? ControlledByName = null);
+
+internal sealed record AgentSessionClaimRequestDto(
+    string SessionId,
+    string ControllerDeviceKey,
+    string ControllerName);
+
+internal sealed record AgentSessionClaimResponseDto(
+    bool Ok,
+    string? Error = null,
+    string? Message = null,
+    bool Unsupported = false);
+
+internal sealed record AgentSessionReleaseRequestDto(
+    string SessionId);
 
 internal sealed record AgentPairRequestDto(
     string Pin,

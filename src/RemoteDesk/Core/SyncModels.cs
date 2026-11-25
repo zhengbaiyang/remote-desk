@@ -52,7 +52,12 @@ internal sealed record SyncedDeviceInfo(
     string? GpuEncoder,
     string? OsVersion,
     long LastSeenAtUtc,
-    bool IsOnline);
+    bool IsOnline,
+    string? RemoteControlState = null,
+    string? ControlledByDeviceKey = null,
+    string? ControlledByDeviceName = null,
+    string? ControllingTargetDeviceKey = null,
+    string? ControllingTargetDeviceName = null);
 
 internal sealed record SyncHealthResponse(
     bool Ok,
@@ -91,6 +96,14 @@ internal sealed record SyncCheckinResult(
 
 internal sealed record SyncDevicesResult(
     IReadOnlyList<SyncedDeviceInfo> Devices,
+    long ServerTimeUtc);
+
+internal sealed record SyncSessionLeaseResult(
+    bool Ok,
+    bool UnsupportedByServer,
+    string? ErrorCode,
+    string? Message,
+    IReadOnlyList<SyncedDeviceInfo>? Devices,
     long ServerTimeUtc);
 
 internal sealed class SyncApiException : Exception

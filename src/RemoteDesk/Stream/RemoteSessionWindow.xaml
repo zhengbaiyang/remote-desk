@@ -122,6 +122,15 @@
             <Setter Property="Background" Value="{StaticResource ControlBg}" />
         </Style>
 
+        <Style x:Key="KeyCap" TargetType="Border">
+            <Setter Property="Background" Value="#323236" />
+            <Setter Property="BorderBrush" Value="#28FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Padding" Value="6,2" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
         <Style x:Key="GraphiteCombo" TargetType="ComboBox">
             <Setter Property="Background" Value="#1C1C1E" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
@@ -320,13 +329,13 @@
                                     Content="办公自由"
                                     Style="{StaticResource ModeSegBtn}"
                                     Tag="Selected"
-                                    ToolTip="默认办公模式：光标自由移动，绝对坐标同步"
+                                    ToolTip="默认办公模式：不锁定鼠标，光标可自由移出画面操作工具栏 (Ctrl+Alt+G)"
                                     Click="OfficeModeClicked" />
                             <Button x:Name="GameModeBtn"
                                     Grid.Column="1"
                                     Content="游戏锁定"
                                     Style="{StaticResource ModeSegBtn}"
-                                    ToolTip="游戏相对锁鼠模式（按 Ctrl+Alt 或切窗自动释放）"
+                                    ToolTip="点击画面后锁定光标；按 Ctrl+Alt 释放，Ctrl+Alt+Shift+Q 断开 (Ctrl+Alt+G)"
                                     Click="GameModeClicked" />
                         </Grid>
                     </Border>
@@ -365,6 +374,13 @@
                             Margin="0,0,5,0"
                             Click="HotkeysBtnClicked" />
 
+                    <Button x:Name="HelpBtn"
+                            Content="操作提示"
+                            Style="{StaticResource BarBtn}"
+                            Margin="0,0,5,0"
+                            ToolTip="查看快捷键与基础操作说明 (Ctrl+Alt+H)"
+                            Click="HelpBtnClicked" />
+
                     <Button x:Name="MuteBtn"
                             Content="声音"
                             Style="{StaticResource BarBtn}"
@@ -375,13 +391,14 @@
                             Content="全屏"
                             Style="{StaticResource BarBtn}"
                             Margin="0,0,5,0"
-                            ToolTip="切换无边框全屏 (F11)"
+                            ToolTip="切换无边框全屏 (F11 / Ctrl+Alt+F)"
                             Click="FullscreenBtnClicked" />
 
                     <Button x:Name="DisconnectBtn"
                             Content="断开"
                             Style="{StaticResource BarBtn}"
                             Tag="Danger"
+                            ToolTip="断开并关闭远控 (Ctrl+Alt+Shift+Q)"
                             Click="DisconnectBtnClicked" />
                 </StackPanel>
             </Grid>
@@ -561,11 +578,96 @@
                         <Button x:Name="PowerShutdownBtn" Content="关闭远程电脑" Style="{StaticResource BarBtn}" Tag="Danger" Padding="8,7" Margin="4,0,0,0" Click="PowerShutdownClicked" />
                     </UniformGrid>
 
-                    <TextBlock Text="快捷键：Ctrl+Alt 释放锁鼠 · F11 切换全屏 · 拖拽文件直传"
+                    <TextBlock Text="快捷键：Ctrl+Alt 释放锁鼠 · F11 全屏 · Ctrl+Alt+Shift+Q 断开 · Ctrl+Alt+H 操作提示"
                                FontSize="11"
                                Foreground="{StaticResource TextMuted}"
                                TextWrapping="Wrap"
                                Margin="0,8,0,0" />
+                </StackPanel>
+            </Border>
+        </Popup>
+
+        <!-- Shortcuts & Basic Operations Guide Popup -->
+        <Popup x:Name="HelpPopup"
+               StaysOpen="False"
+               AllowsTransparency="True"
+               Placement="Bottom"
+               VerticalOffset="6"
+               PopupAnimation="Fade"
+               Opened="MenuPopupOpened"
+               Closed="MenuPopupClosed">
+            <Border Background="{StaticResource PopupBg}"
+                    BorderBrush="{StaticResource BorderSubtle}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Width="356"
+                    Padding="15">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="4" Opacity="0.35" />
+                </Border.Effect>
+                <StackPanel>
+                    <TextBlock Text="常用快捷键" FontSize="13.5" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" Margin="0,0,0,10" />
+
+                    <Grid Margin="0,0,0,7">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource KeyCap}">
+                            <TextBlock Text="Ctrl + Alt" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="释放锁定的鼠标，恢复自由移出" FontSize="12" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,7">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource KeyCap}">
+                            <TextBlock Text="Ctrl + Alt + G" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="切换「办公自由」与「游戏锁定」模式" FontSize="12" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,7">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource KeyCap}">
+                            <TextBlock Text="F11 / Ctrl+Alt+F" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="进入或退出无边框全屏" FontSize="12" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,7">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource KeyCap}">
+                            <TextBlock Text="Ctrl + Alt + Shift + Q" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="立即断开并关闭当前远控窗口" FontSize="12" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource KeyCap}">
+                            <TextBlock Text="Ctrl + Alt + H" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="打开或关闭本操作提示面板" FontSize="12" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </Grid>
+
+                    <Border Height="1" Background="#14FFFFFF" Margin="0,11,0,10" />
+                    <TextBlock Text="基础操作说明" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" Margin="0,0,0,6" />
+                    <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}" TextWrapping="Wrap" LineHeight="18">
+                        • 办公自由模式下默认不锁鼠，可直接移出画面点击工具栏或「断开」。&#x0a;• 切换「游戏锁定」后需点击画面才锁定；按 Ctrl+Alt 或 Alt+Tab 可随时释放。&#x0a;• 全屏状态下将鼠标移至屏幕顶部中央即可展开悬浮控制栏。&#x0a;• 将本机文件直接拖拽到远程画面即可传至远程「下载\RemoteDesk」。&#x0a;• 开启防窥黑屏后，被控端本机按 Ctrl+Alt+End 可紧急解除。
+                    </TextBlock>
                 </StackPanel>
             </Border>
         </Popup>

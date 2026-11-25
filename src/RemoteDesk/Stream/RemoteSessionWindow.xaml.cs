@@ -19,6 +19,15 @@ internal sealed record AgentPeerSessionContext(
     int AgentPort,
     string AgentAuthKey);
 
+internal sealed record RemoteSessionLockContext(
+    string LocalDeviceKey,
+    string LocalDeviceName,
+    string? TargetDeviceKey,
+    string? SyncServerUrl,
+    string? SyncSessionToken,
+    string? SyncServerCertThumbprint,
+    Action<IReadOnlyList<SyncedDeviceInfo>>? OnSyncedDevicesUpdated);
+
 public partial class RemoteSessionWindow : Window
 {
     private const int WmClipboardUpdate = 0x031D;
@@ -28,10 +37,12 @@ public partial class RemoteSessionWindow : Window
     private readonly string _linkHint;
     private readonly Func<StreamOptions, Task>? _onStreamOptionsChanged;
     private readonly AgentPeerSessionContext? _peerContext;
+    private readonly RemoteSessionLockContext? _lockContext;
     private readonly Action<bool, bool>? _onSessionPrefsChanged;
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private readonly SemaphoreSlim _uploadLock = new(1, 1);
     private readonly DispatcherTimer _clipboardPollTimer = new() { Interval = TimeSpan.FromMilliseconds(1200) };
+    private readonly DispatcherTimer _sessionHeartbeatTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _powerConfirmResetTimer = new() { Interval = TimeSpan.FromSeconds(4) };
 
     private StreamOptions _currentOptions;
@@ -39,6 +50,7 @@ public partial class RemoteSessionWindow : Window
     private GameStreamIdentity? _identity;
     private GameStreamClient? _gsClient;
     private AgentPeerClient? _peerClient;
+    private SyncApiClient? _syncApiClient;
     private NativeStreamSession? _activeSession;
     private RemoteOverlayWindow? _overlay;
     private HwndSource? _hwndSource;
@@ -63,6 +75,9 @@ public partial class RemoteSessionWindow : Window
     private bool _clipboardPollInFlight;
     private string? _lastClipboardSha256;
     private string? _pendingPowerConfirmAction;
+    private bool _syncLockAcquired;
+    private bool _peerLockAcquired;
+    private bool _sessionHeartbeatInFlight;
 
     public RemoteSessionWindow()
         : this(DeviceProfile.Create("远程主机", "127.0.0.1"), "127.0.0.1", "直连", null)
@@ -77,7 +92,8 @@ public partial class RemoteSessionWindow : Window
         AgentPeerSessionContext? peerContext = null,
         bool autoMatchResolution = true,
         bool autoSyncClipboard = true,
-        Action<bool, bool>? onSessionPrefsChanged = null)
+        Action<bool, bool>? onSessionPrefsChanged = null,
+        RemoteSessionLockContext? lockContext = null)
     {
         ArgumentNullException.ThrowIfNull(device);
         if (string.IsNullOrWhiteSpace(targetHost))
@@ -90,12 +106,15 @@ public partial class RemoteSessionWindow : Window
         _linkHint = string.IsNullOrWhiteSpace(linkTypeHint) ? "直连" : linkTypeHint.Trim();
         _onStreamOptionsChanged = onStreamOptionsChanged;
         _peerContext = peerContext;
+        _lockContext = lockContext;
         _autoMatchResolution = autoMatchResolution;
         _clipboardSyncEnabled = autoSyncClipboard;
         _onSessionPrefsChanged = onSessionPrefsChanged;
 
         if (_peerContext is not null)
             _peerClient = new AgentPeerClient();
+        if (_lockContext is { SyncServerUrl.Length: > 0, SyncSessionToken.Length: > 0, TargetDeviceKey.Length: > 0 })
+            _syncApiClient = new SyncApiClient();
 
         _currentOptions = StreamOptions.Normalize(device.Stream);
         _pendingPreset = _currentOptions.Preset;
@@ -110,11 +129,15 @@ public partial class RemoteSessionWindow : Window
 
         VideoHost.InputModeChanged += OnVideoHostInputModeChanged;
         VideoHost.FullscreenToggleRequested += () => ToggleFullscreen();
+        VideoHost.DisconnectRequested += () => Close();
+        VideoHost.HelpToggleRequested += ToggleHelpPopup;
         VideoHost.FilesDropped += paths => _ = UploadFilesAsync(paths);
 
         _clipboardPollTimer.Tick += async (_, _) => await PollRemoteClipboardAsync();
+        _sessionHeartbeatTimer.Tick += async (_, _) => await HeartbeatSessionLocksAsync();
         _powerConfirmResetTimer.Tick += (_, _) => ResetPowerConfirmButtons();
 
+        PreviewKeyDown += OnWindowPreviewKeyDown;
         Loaded += OnWindowLoaded;
         LocationChanged += (_, _) => SyncOverlayBounds();
         SizeChanged += (_, _) => SyncOverlayBounds();
@@ -176,18 +199,22 @@ public partial class RemoteSessionWindow : Window
         _overlay = new RemoteOverlayWindow { Owner = this };
         _overlay.SetDeviceInfo(_device.Name, _linkHint);
         _overlay.SetTelemetryHudVisible(_isHudVisible);
-        _overlay.SetInputMode(VideoHost.InputMode);
+        _overlay.SetPointerLockState(VideoHost.InputMode, VideoHost.IsPointerLocked);
         _overlay.SetMuted(_isMuted);
         _overlay.SetPeerToolsAvailable(_peerContext is not null);
         _overlay.SetClipboardSyncEnabled(_clipboardSyncEnabled);
         _overlay.SetPrivacyEnabled(_privacyEnabled);
+        _overlay.PreviewKeyDown += OnWindowPreviewKeyDown;
 
-        _overlay.InputModeRequested += mode => VideoHost.SetInputMode(mode,
+        _overlay.InputModeRequested += mode => VideoHost.SetInputMode(
+            mode,
             mode == ControlInputMode.GameRelativeLock
-                ? "游戏锁定模式：按 Ctrl+Alt 释放光标"
-                : "已切换回办公自由指针模式");
+                ? "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放"
+                : "已切换回办公自由指针模式",
+            lockImmediately: false);
         _overlay.QualityMenuRequested += target => OpenQualityPopup(target);
         _overlay.HotkeysMenuRequested += target => OpenHotkeysPopup(target);
+        _overlay.HelpMenuRequested += target => OpenHelpPopup(target);
         _overlay.FileUploadRequested += () => OpenUploadDialogAndSend();
         _overlay.ClipboardSyncToggleRequested += ToggleClipboardSync;
         _overlay.PrivacyToggleRequested += () => _ = TogglePrivacyAsync();
@@ -274,6 +301,30 @@ public partial class RemoteSessionWindow : Window
             _identity ??= GameStreamIdentity.LoadOrCreate();
             _gsClient ??= new GameStreamClient(_identity);
 
+            if (!cancelExistingRemoteSession)
+            {
+                SetConnectingStatus("正在锁定远控独占会话…", $"核验 {_device.Name} 当前未被其他设备远控");
+                var (syncOk, syncErr) = await AcquireSyncLockAsync(ct);
+                if (!syncOk)
+                {
+                    SetErrorStatus("该设备当前不可被远控", syncErr ?? "目标设备正处于远控会话中。");
+                    return;
+                }
+
+                var (peerOk, peerErr) = await AcquirePeerLockAsync(ct);
+                if (!peerOk)
+                {
+                    await ReleaseSyncLockAsync();
+                    SetErrorStatus("该设备当前不可被远控", peerErr ?? "目标设备当前正处于远控会话中。");
+                    return;
+                }
+
+                _sessionHeartbeatTimer.Start();
+            }
+
+            if (ct.IsCancellationRequested || _isClosing || gen != Volatile.Read(ref _connectionGeneration))
+                return;
+
             if (cancelExistingRemoteSession)
                 await _gsClient.CancelSessionAsync(_targetHost, ct);
 
@@ -310,6 +361,12 @@ public partial class RemoteSessionWindow : Window
 
             if (ct.IsCancellationRequested || _isClosing || gen != Volatile.Read(ref _connectionGeneration))
                 return;
+
+            if (_peerContext is null && !_syncLockAcquired && !cancelExistingRemoteSession && serverInfo.CurrentGameId != 0)
+            {
+                SetErrorStatus("目标设备正被远控", "目标主机当前已存在活跃远控会话，暂不可被其他设备远控。");
+                return;
+            }
 
             if (serverInfo.PairStatus != 1)
             {
@@ -464,9 +521,11 @@ public partial class RemoteSessionWindow : Window
                 ToolbarStatusDot.Fill = (Brush)FindResource("ReadyBrush");
                 MiniStatsText.Text = "已连接 · 等待首帧…";
                 _overlay?.HideStatusCard();
-                _overlay?.ShowToast(VideoHost.InputMode == ControlInputMode.GameRelativeLock
-                    ? "已进入游戏锁定模式 · 按 Ctrl+Alt 释放光标"
-                    : "已连接 · 办公自由指针模式 · 按 F11 全屏 · 拖拽即可传文件");
+                _overlay?.ShowToast(
+                    VideoHost.InputMode == ControlInputMode.GameRelativeLock
+                        ? "已进入游戏锁定模式 · 按 Ctrl+Alt 释放光标"
+                        : "已连接 · 办公自由模式（光标可自由移出）· F11 全屏 · Ctrl+Alt+H 查看操作提示",
+                    durationMs: 4500);
             });
         };
 
@@ -476,6 +535,10 @@ public partial class RemoteSessionWindow : Window
             {
                 if (_isClosing || generation != Volatile.Read(ref _connectionGeneration))
                     return;
+                _sessionHeartbeatTimer.Stop();
+                _ = ReleasePeerLockAsync();
+                _ = ReleaseSyncLockAsync();
+                VideoHost.SetInputMode(ControlInputMode.OfficeFreePointer, null);
                 VideoHost.ReleaseCaptureForDeactivation();
                 ToolbarStatusDot.Fill = (Brush)FindResource("DangerBrush");
                 MiniStatsText.Text = "已断开";
@@ -790,13 +853,13 @@ public partial class RemoteSessionWindow : Window
         _overlay?.ShowError(title, detail);
     }
 
-    private void OnVideoHostInputModeChanged(ControlInputMode mode, string? toastReason)
+    private void OnVideoHostInputModeChanged(ControlInputMode mode, bool isPointerLocked, string? toastReason)
     {
         var isGame = mode == ControlInputMode.GameRelativeLock;
         OfficeModeBtn.Tag = isGame ? null : "Selected";
         GameModeBtn.Tag = isGame ? "Selected" : null;
         UpdateSessionModeIndicator(isGame, animate: IsLoaded);
-        _overlay?.SetInputMode(mode);
+        _overlay?.SetPointerLockState(mode, isPointerLocked);
 
         if (!string.IsNullOrWhiteSpace(toastReason))
             _overlay?.ShowToast(toastReason);
@@ -884,6 +947,8 @@ public partial class RemoteSessionWindow : Window
     private void OpenQualityPopup(FrameworkElement placementTarget)
     {
         VideoHost.ReleaseCaptureForDeactivation();
+        HotkeysPopup.IsOpen = false;
+        HelpPopup.IsOpen = false;
         SyncQualityPopupControls(_currentOptions);
         UpdateCodecCapabilityHint();
         QualityPopup.PlacementTarget = placementTarget;
@@ -893,9 +958,41 @@ public partial class RemoteSessionWindow : Window
     private void OpenHotkeysPopup(FrameworkElement placementTarget)
     {
         VideoHost.ReleaseCaptureForDeactivation();
+        QualityPopup.IsOpen = false;
+        HelpPopup.IsOpen = false;
         ResetPowerConfirmButtons();
         HotkeysPopup.PlacementTarget = placementTarget;
         HotkeysPopup.IsOpen = true;
+    }
+
+    private void OpenHelpPopup(FrameworkElement placementTarget)
+    {
+        VideoHost.ReleaseCaptureForDeactivation();
+        QualityPopup.IsOpen = false;
+        HotkeysPopup.IsOpen = false;
+        HelpPopup.PlacementTarget = placementTarget;
+        HelpPopup.IsOpen = true;
+    }
+
+    private void ToggleHelpPopup()
+    {
+        if (HelpPopup.IsOpen)
+        {
+            HelpPopup.IsOpen = false;
+            return;
+        }
+
+        var anchor = _isFullscreen && _overlay is not null
+            ? _overlay.FullscreenMenuAnchor
+            : (FrameworkElement)HelpBtn;
+        OpenHelpPopup(anchor);
+    }
+
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (VideoHost.TryHandleWindowShortcut(key, Keyboard.Modifiers))
+            e.Handled = true;
     }
 
     private void UpdateQualitySummaryButton() =>
@@ -948,10 +1045,10 @@ public partial class RemoteSessionWindow : Window
     }
 
     private void OfficeModeClicked(object sender, RoutedEventArgs e) =>
-        VideoHost.SetInputMode(ControlInputMode.OfficeFreePointer, "已切换到办公自由指针模式");
+        VideoHost.SetInputMode(ControlInputMode.OfficeFreePointer, "已切换到办公自由指针模式", lockImmediately: false);
 
     private void GameModeClicked(object sender, RoutedEventArgs e) =>
-        VideoHost.SetInputMode(ControlInputMode.GameRelativeLock, "游戏锁定模式：按 Ctrl+Alt 释放光标");
+        VideoHost.SetInputMode(ControlInputMode.GameRelativeLock, "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放", lockImmediately: false);
 
     private void ToggleHudClicked(object sender, RoutedEventArgs e) => ToggleHud();
     private void QualityBtnClicked(object sender, RoutedEventArgs e) => OpenQualityPopup(QualityBtn);
@@ -959,6 +1056,7 @@ public partial class RemoteSessionWindow : Window
     private void ClipboardSyncBtnClicked(object sender, RoutedEventArgs e) => ToggleClipboardSync();
     private async void PrivacyBtnClicked(object sender, RoutedEventArgs e) => await TogglePrivacyAsync();
     private void HotkeysBtnClicked(object sender, RoutedEventArgs e) => OpenHotkeysPopup(HotkeysBtn);
+    private void HelpBtnClicked(object sender, RoutedEventArgs e) => ToggleHelpPopup();
     private void MuteBtnClicked(object sender, RoutedEventArgs e) => ToggleMute();
     private void FullscreenBtnClicked(object sender, RoutedEventArgs e) => ToggleFullscreen();
     private void DisconnectBtnClicked(object sender, RoutedEventArgs e) => Close();
@@ -1144,9 +1242,11 @@ public partial class RemoteSessionWindow : Window
     {
         _isClosing = true;
         Interlocked.Increment(ref _connectionGeneration);
+        VideoHost.SetInputMode(ControlInputMode.OfficeFreePointer, null);
         VideoHost.ReleaseCaptureForDeactivation();
 
         _clipboardPollTimer.Stop();
+        _sessionHeartbeatTimer.Stop();
         _powerConfirmResetTimer.Stop();
 
         if (_hwndSource is not null)
@@ -1177,6 +1277,8 @@ public partial class RemoteSessionWindow : Window
         var peerCtx = _peerContext;
         var restoreDisplay = _displayOverrideApplied;
         var disablePrivacy = _privacyEnabled;
+        var releasePeerLock = _peerLockAcquired;
+        _peerLockAcquired = false;
         _peerClient = null;
 
         if (peerClient is not null)
@@ -1189,6 +1291,8 @@ public partial class RemoteSessionWindow : Window
                         await peerClient.SetPrivacyScreenAsync(_targetHost, peerCtx.AgentPort, peerCtx.AgentAuthKey, false).ConfigureAwait(false);
                     if (peerCtx is not null && restoreDisplay)
                         await peerClient.RestoreDisplayModeAsync(_targetHost, peerCtx.AgentPort, peerCtx.AgentAuthKey).ConfigureAwait(false);
+                    if (peerCtx is not null && releasePeerLock)
+                        await peerClient.ReleaseSessionAsync(_targetHost, peerCtx.AgentPort, peerCtx.AgentAuthKey, _sessionId).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -1196,6 +1300,36 @@ public partial class RemoteSessionWindow : Window
                 finally
                 {
                     peerClient.Dispose();
+                }
+            });
+        }
+
+        var syncClient = _syncApiClient;
+        var lockCtx = _lockContext;
+        var releaseSyncLock = _syncLockAcquired;
+        _syncLockAcquired = false;
+        _syncApiClient = null;
+        if (syncClient is not null && lockCtx is not null && releaseSyncLock &&
+            !string.IsNullOrEmpty(lockCtx.SyncServerUrl) &&
+            !string.IsNullOrEmpty(lockCtx.SyncSessionToken))
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var rel = await syncClient.ReleaseRemoteSessionAsync(
+                        lockCtx.SyncServerUrl,
+                        lockCtx.SyncSessionToken,
+                        _sessionId,
+                        lockCtx.LocalDeviceKey,
+                        lockCtx.SyncServerCertThumbprint).ConfigureAwait(false);
+                    if (rel.Devices is not null && lockCtx.OnSyncedDevicesUpdated is not null)
+                    {
+                        _ = Application.Current?.Dispatcher.BeginInvoke(() => lockCtx.OnSyncedDevicesUpdated(rel.Devices));
+                    }
+                }
+                catch
+                {
                 }
             });
         }
@@ -1208,6 +1342,170 @@ public partial class RemoteSessionWindow : Window
 
         _identity?.Dispose();
         _identity = null;
+    }
+
+    private async Task<(bool Ok, string? Error)> AcquireSyncLockAsync(CancellationToken ct)
+    {
+        if (_syncApiClient is null ||
+            _lockContext is null ||
+            string.IsNullOrEmpty(_lockContext.SyncServerUrl) ||
+            string.IsNullOrEmpty(_lockContext.SyncSessionToken) ||
+            string.IsNullOrEmpty(_lockContext.TargetDeviceKey))
+        {
+            return (true, null);
+        }
+
+        try
+        {
+            var res = await _syncApiClient.AcquireRemoteSessionAsync(
+                _lockContext.SyncServerUrl,
+                _lockContext.SyncSessionToken,
+                _sessionId,
+                _lockContext.LocalDeviceKey,
+                _lockContext.TargetDeviceKey,
+                _lockContext.SyncServerCertThumbprint,
+                ct);
+
+            if (!res.Ok)
+                return (false, res.Message ?? "目标设备当前处于远控占用状态。");
+
+            if (!res.UnsupportedByServer)
+                _syncLockAcquired = true;
+
+            if (res.Devices is not null)
+                _lockContext.OnSyncedDevicesUpdated?.Invoke(res.Devices);
+
+            return (true, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // If sync server is temporarily unreachable, fall through to direct peer claim.
+            return (true, null);
+        }
+    }
+
+    private async Task<(bool Ok, string? Error)> AcquirePeerLockAsync(CancellationToken ct)
+    {
+        if (_peerClient is null || _peerContext is null)
+            return (true, null);
+
+        var localKey = _lockContext?.LocalDeviceKey ?? Environment.MachineName;
+        var localName = _lockContext?.LocalDeviceName ?? Environment.MachineName;
+        var res = await _peerClient.ClaimSessionAsync(
+            _targetHost,
+            _peerContext.AgentPort,
+            _peerContext.AgentAuthKey,
+            _sessionId,
+            localKey,
+            localName,
+            ct);
+
+        if (!res.Ok)
+        {
+            if (string.Equals(res.Error, "NETWORK_ERROR", StringComparison.Ordinal))
+                return (true, null);
+            return (false, res.Message ?? "目标设备当前处于远控占用状态。");
+        }
+
+        if (!res.Unsupported)
+            _peerLockAcquired = true;
+
+        return (true, null);
+    }
+
+    private async Task HeartbeatSessionLocksAsync()
+    {
+        if (_sessionHeartbeatInFlight || _isClosing)
+            return;
+
+        _sessionHeartbeatInFlight = true;
+        try
+        {
+            if (_syncLockAcquired &&
+                _syncApiClient is not null &&
+                _lockContext is { SyncServerUrl.Length: > 0, SyncSessionToken.Length: > 0, TargetDeviceKey.Length: > 0 })
+            {
+                try
+                {
+                    var hb = await _syncApiClient.HeartbeatRemoteSessionAsync(
+                        _lockContext.SyncServerUrl,
+                        _lockContext.SyncSessionToken,
+                        _sessionId,
+                        _lockContext.LocalDeviceKey,
+                        _lockContext.TargetDeviceKey,
+                        _lockContext.SyncServerCertThumbprint);
+                    if (hb.Devices is not null && !_isClosing)
+                        _lockContext.OnSyncedDevicesUpdated?.Invoke(hb.Devices);
+                }
+                catch
+                {
+                }
+            }
+
+            if (_peerLockAcquired && _peerClient is not null && _peerContext is not null)
+            {
+                try
+                {
+                    var localKey = _lockContext?.LocalDeviceKey ?? Environment.MachineName;
+                    var localName = _lockContext?.LocalDeviceName ?? Environment.MachineName;
+                    await _peerClient.ClaimSessionAsync(
+                        _targetHost,
+                        _peerContext.AgentPort,
+                        _peerContext.AgentAuthKey,
+                        _sessionId,
+                        localKey,
+                        localName);
+                }
+                catch
+                {
+                }
+            }
+        }
+        finally
+        {
+            _sessionHeartbeatInFlight = false;
+        }
+    }
+
+    private async Task ReleasePeerLockAsync()
+    {
+        if (!_peerLockAcquired || _peerClient is null || _peerContext is null)
+            return;
+
+        _peerLockAcquired = false;
+        await _peerClient.ReleaseSessionAsync(_targetHost, _peerContext.AgentPort, _peerContext.AgentAuthKey, _sessionId);
+    }
+
+    private async Task ReleaseSyncLockAsync()
+    {
+        if (!_syncLockAcquired ||
+            _syncApiClient is null ||
+            _lockContext is null ||
+            string.IsNullOrEmpty(_lockContext.SyncServerUrl) ||
+            string.IsNullOrEmpty(_lockContext.SyncSessionToken))
+        {
+            return;
+        }
+
+        _syncLockAcquired = false;
+        try
+        {
+            var rel = await _syncApiClient.ReleaseRemoteSessionAsync(
+                _lockContext.SyncServerUrl,
+                _lockContext.SyncSessionToken,
+                _sessionId,
+                _lockContext.LocalDeviceKey,
+                _lockContext.SyncServerCertThumbprint);
+            if (rel.Devices is not null)
+                _lockContext.OnSyncedDevicesUpdated?.Invoke(rel.Devices);
+        }
+        catch
+        {
+        }
     }
 
     [DllImport("user32.dll", SetLastError = true)]

@@ -26,13 +26,22 @@ internal sealed record DeviceListItem(
     string ModeBadgeText,
     bool IsCloudSynced = false,
     bool IsOnline = true,
-    SyncedDeviceInfo? SyncedDevice = null)
+    SyncedDeviceInfo? SyncedDevice = null,
+    bool IsBeingControlled = false,
+    bool IsControllingOther = false,
+    bool IsControlledByLocal = false,
+    string? ControlledByName = null,
+    string? ControllingTargetName = null)
 {
     public string UniqueKey => SyncedDevice is not null
         ? $"cloud:{SyncedDevice.Id}"
         : $"local:{Name}:{HostAddress}";
 
     public bool SupportsStream => !string.IsNullOrWhiteSpace(HostAddress);
+
+    public bool IsBlockedByRemoteControl => (IsBeingControlled && !IsControlledByLocal) || IsControllingOther;
+
+    public bool IsRemoteBusy => IsBeingControlled || IsControllingOther;
 
     public DeviceProfile ToProfile(string? hostOverride = null)
     {
@@ -47,28 +56,64 @@ internal sealed record DeviceListItem(
             : DeviceProfile.Create(Name, effectiveHost, Stream, StreamAppName);
     }
 
-    public static DeviceListItem FromProfile(DeviceProfile profile) =>
+    public static DeviceListItem FromProfile(DeviceProfile profile, bool isControlledByLocal = false) =>
         new(
             LocalProfile: profile,
             Name: profile.Name,
             HostAddress: profile.HostAddress,
             Stream: profile.Stream,
             StreamAppName: profile.StreamAppName,
-            TargetSubtitle: profile.HostAddress,
-            ModeBadgeText: "高刷",
+            TargetSubtitle: isControlledByLocal ? $"{profile.HostAddress} · 被远控（本机）" : profile.HostAddress,
+            ModeBadgeText: isControlledByLocal ? "被远控" : "高刷",
             IsCloudSynced: false,
             IsOnline: true,
-            SyncedDevice: null);
+            SyncedDevice: null,
+            IsBeingControlled: isControlledByLocal,
+            IsControllingOther: false,
+            IsControlledByLocal: isControlledByLocal,
+            ControlledByName: isControlledByLocal ? "本机" : null);
 
-    public static DeviceListItem FromSyncedDevice(SyncedDeviceInfo synced, StreamOptions defaultStream)
+    public static DeviceListItem FromSyncedDevice(
+        SyncedDeviceInfo synced,
+        StreamOptions defaultStream,
+        string localDeviceKey = "",
+        bool isControlledByLocal = false)
     {
         var preferredHost = !string.IsNullOrWhiteSpace(synced.VirtualIpv4)
             ? synced.VirtualIpv4
             : synced.LanIpv4;
-        var statusText = synced.IsOnline ? "在线" : "离线";
+        var status = RemoteControlLockPolicy.ParseStatus(synced.RemoteControlState);
+        var isBeingControlled = isControlledByLocal || status == DeviceRemoteControlStatus.BeingControlled;
+        var isControllingOther = !isBeingControlled && status == DeviceRemoteControlStatus.Controlling;
+        var controlledByLocal = isControlledByLocal ||
+            (isBeingControlled && string.Equals(synced.ControlledByDeviceKey, localDeviceKey, StringComparison.OrdinalIgnoreCase));
+
+        string statusText;
+        string badge;
+        if (isBeingControlled)
+        {
+            badge = "被远控";
+            statusText = controlledByLocal
+                ? "被远控（本机）"
+                : (!string.IsNullOrWhiteSpace(synced.ControlledByDeviceName)
+                    ? $"被 {synced.ControlledByDeviceName} 远控"
+                    : "被远控");
+        }
+        else if (isControllingOther)
+        {
+            badge = "远控中";
+            statusText = !string.IsNullOrWhiteSpace(synced.ControllingTargetDeviceName)
+                ? $"远控中 ({synced.ControllingTargetDeviceName})"
+                : "远控中";
+        }
+        else
+        {
+            statusText = synced.IsOnline ? "在线" : "离线";
+            badge = string.IsNullOrWhiteSpace(synced.GpuEncoder) ? "云同步" : $"云 · {synced.GpuEncoder}";
+        }
+
         var pinTag = synced.SecurityPinRequired ? " · 需密码" : "";
         var subtitle = $"{preferredHost ?? "待分配 IP"} · {statusText}{pinTag}";
-        var badge = string.IsNullOrWhiteSpace(synced.GpuEncoder) ? "云同步" : $"云 · {synced.GpuEncoder}";
 
         return new DeviceListItem(
             LocalProfile: null,
@@ -80,7 +125,12 @@ internal sealed record DeviceListItem(
             ModeBadgeText: badge,
             IsCloudSynced: true,
             IsOnline: synced.IsOnline,
-            SyncedDevice: synced);
+            SyncedDevice: synced,
+            IsBeingControlled: isBeingControlled,
+            IsControllingOther: isControllingOther,
+            IsControlledByLocal: controlledByLocal,
+            ControlledByName: controlledByLocal ? "本机" : synced.ControlledByDeviceName,
+            ControllingTargetName: synced.ControllingTargetDeviceName);
     }
 }
 
@@ -107,6 +157,7 @@ public partial class MainWindow : Window
     private bool isSyncingStreamUi;
     private bool isDraggingBitrate;
     private bool isSyncingHostToggle;
+    private bool isRefreshingDevices;
 
     private DeviceListItem? SelectedListItem => DeviceList.SelectedItem as DeviceListItem;
 
@@ -156,6 +207,14 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) =>
         {
+            foreach (var win in activeStreamWindows.Values.ToArray())
+            {
+                try { win.Close(); } catch { }
+            }
+            activeStreamWindows.Clear();
+            activeStreamDeviceKeys.Clear();
+            localHostPeerHost?.SetControllingState(false);
+
             localHostPeerHost?.Dispose();
             localHostPeerHost = null;
             sessionBridgeServer?.Dispose();
@@ -597,6 +656,15 @@ public partial class MainWindow : Window
         if (SelectedListItem is not { } item)
             return;
 
+        var lockStatus = item.IsBeingControlled
+            ? DeviceRemoteControlStatus.BeingControlled
+            : (item.IsControllingOther ? DeviceRemoteControlStatus.Controlling : DeviceRemoteControlStatus.Idle);
+        if (!RemoteControlLockPolicy.CanInitiateConnection(lockStatus, item.IsControlledByLocal, out var blockReason))
+        {
+            ShowStatus(blockReason!, warning: true);
+            return;
+        }
+
         if (!NativeStreamBridge.IsAvailable())
         {
             ShowStatus("未检测到内置原生控屏组件 RemoteDesk.StreamCore.dll，请重新构建或完整安装客户端。", warning: true);
@@ -622,6 +690,15 @@ public partial class MainWindow : Window
     {
         if (SelectedListItem is not { } item)
             return;
+
+        var lockStatus = item.IsBeingControlled
+            ? DeviceRemoteControlStatus.BeingControlled
+            : (item.IsControllingOther ? DeviceRemoteControlStatus.Controlling : DeviceRemoteControlStatus.Idle);
+        if (!RemoteControlLockPolicy.CanInitiateConnection(lockStatus, item.IsControlledByLocal, out var blockReason))
+        {
+            ShowStatus(blockReason!, warning: true);
+            return;
+        }
 
         if (item.IsCloudSynced)
         {
@@ -694,7 +771,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RefreshDevices(int index, string? selectUniqueKey = null)
+    private void RefreshDevices(int index, string? selectUniqueKey = null, bool preserveTransientUi = false)
     {
         var items = new List<DeviceListItem>();
         var localKey = EnsureLocalDeviceKeyPersisted();
@@ -706,7 +783,13 @@ public partial class MainWindow : Window
             if (string.Equals(synced.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            var cloudItem = DeviceListItem.FromSyncedDevice(synced, defaultStream);
+            var preferredHost = !string.IsNullOrWhiteSpace(synced.VirtualIpv4)
+                ? synced.VirtualIpv4
+                : synced.LanIpv4;
+            var isLocalControlling = IsHostControlledByLocal(preferredHost, synced.DeviceKey) ||
+                (!string.IsNullOrWhiteSpace(synced.LanIpv4) && IsHostControlledByLocal(synced.LanIpv4, synced.DeviceKey));
+
+            var cloudItem = DeviceListItem.FromSyncedDevice(synced, defaultStream, localKey, isLocalControlling);
             items.Add(cloudItem);
             if (!string.IsNullOrWhiteSpace(synced.VirtualIpv4))
                 cloudHosts.Add(synced.VirtualIpv4);
@@ -716,26 +799,55 @@ public partial class MainWindow : Window
         {
             if (!string.IsNullOrWhiteSpace(local.HostAddress) && cloudHosts.Contains(local.HostAddress))
                 continue;
-            items.Add(DeviceListItem.FromProfile(local));
+            items.Add(DeviceListItem.FromProfile(local, IsHostControlledByLocal(local.HostAddress, deviceKey: null)));
         }
 
-        DeviceList.ItemsSource = items;
         var resolvedIndex = -1;
         if (!string.IsNullOrEmpty(selectUniqueKey))
             resolvedIndex = items.FindIndex(i => string.Equals(i.UniqueKey, selectUniqueKey, StringComparison.Ordinal));
         if (resolvedIndex < 0 && items.Count > 0)
             resolvedIndex = Math.Clamp(index, 0, items.Count - 1);
 
-        DeviceList.SelectedIndex = resolvedIndex;
-        DeviceCount.Text = $"{items.Count} 台";
-        DeviceListEmpty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (DeviceList.SelectedItem is not null)
-            DeviceList.ScrollIntoView(DeviceList.SelectedItem);
+        var keepEditorOrRemoval = preserveTransientUi &&
+            (EditorView.Visibility == Visibility.Visible || RemovalView.Visibility == Visibility.Visible);
+        var keepSecurityPinCard = preserveTransientUi &&
+            SecurityPinPromptCard.Visibility == Visibility.Visible &&
+            pendingSecurityPinItem is { } savedPinItem &&
+            resolvedIndex >= 0 &&
+            string.Equals(items[resolvedIndex].UniqueKey, savedPinItem.UniqueKey, StringComparison.Ordinal);
+
+        isRefreshingDevices = true;
+        try
+        {
+            DeviceList.ItemsSource = items;
+            DeviceList.SelectedIndex = resolvedIndex;
+            DeviceCount.Text = $"{items.Count} 台";
+            DeviceListEmpty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (DeviceList.SelectedItem is not null)
+                DeviceList.ScrollIntoView(DeviceList.SelectedItem);
+        }
+        finally
+        {
+            isRefreshingDevices = false;
+        }
+
+        if (keepEditorOrRemoval)
+            return;
+
+        var preservedPinItem = keepSecurityPinCard ? pendingSecurityPinItem : null;
         ShowDevice();
+        if (preservedPinItem is not null && SecurityPinPromptCard is not null)
+        {
+            pendingSecurityPinItem = preservedPinItem;
+            SecurityPinPromptCard.Visibility = Visibility.Visible;
+        }
     }
 
     private void DeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (isRefreshingDevices)
+            return;
+
         if (SelectedListItem is not null && currentPage != AppPage.Remote)
             NavigateTo(AppPage.Remote);
         ShowDevice();
@@ -766,7 +878,35 @@ public partial class MainWindow : Window
             return;
 
         DeviceNameText.Text = item.Name;
-        if (item is { IsCloudSynced: true, SyncedDevice: { } synced })
+        if (item.IsBeingControlled)
+        {
+            DeviceActiveModeText.Text = item.IsControlledByLocal ? "被远控（本机连接中）" : "被远控";
+            DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, "WarningSoft");
+            DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, "Warning");
+            if (item is { IsCloudSynced: true, SyncedDevice: { } syncedBusy })
+            {
+                DeviceHostText.Text = syncedBusy.VirtualIpv4 is not null ? $"虚拟内网 {syncedBusy.VirtualIpv4}" : "待分配虚拟 IP";
+                DeviceSecondaryText.Text = item.IsControlledByLocal
+                    ? "当前正由本机远控"
+                    : (!string.IsNullOrWhiteSpace(item.ControlledByName) ? $"控制端：{item.ControlledByName}" : "正被其他设备远控");
+            }
+            else
+            {
+                DeviceHostText.Text = item.HostAddress is not null ? $"直连 {item.HostAddress}" : "未配置直连地址";
+                DeviceSecondaryText.Text = "当前正由本机远控";
+            }
+        }
+        else if (item.IsControllingOther)
+        {
+            DeviceActiveModeText.Text = "远控中 · 不可被控";
+            DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, "WarningSoft");
+            DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, "Warning");
+            DeviceHostText.Text = item.SyncedDevice?.VirtualIpv4 is not null ? $"虚拟内网 {item.SyncedDevice.VirtualIpv4}" : "待分配虚拟 IP";
+            DeviceSecondaryText.Text = !string.IsNullOrWhiteSpace(item.ControllingTargetName)
+                ? $"正在远控 {item.ControllingTargetName}"
+                : "正在远控其他设备";
+        }
+        else if (item is { IsCloudSynced: true, SyncedDevice: { } synced })
         {
             DeviceActiveModeText.Text = synced.IsOnline ? "云同步 · 在线" : "云同步 · 离线";
             DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, synced.IsOnline ? "ReadySoft" : "SurfaceSubtle");
@@ -788,7 +928,31 @@ public partial class MainWindow : Window
 
         SyncStreamControls(item.Stream, syncSliderValue: true);
 
-        ConnectButtonText.Text = item.IsCloudSynced ? "一键高刷连接" : "发起高刷连接";
+        if (item.IsBeingControlled && !item.IsControlledByLocal)
+        {
+            ConnectButtonText.Text = "设备正被远控";
+            ConnectButton.IsEnabled = false;
+            PairButton.IsEnabled = false;
+        }
+        else if (item.IsControllingOther)
+        {
+            ConnectButtonText.Text = "设备远控中";
+            ConnectButton.IsEnabled = false;
+            PairButton.IsEnabled = false;
+        }
+        else if (item.IsControlledByLocal)
+        {
+            ConnectButtonText.Text = "切换至远控窗";
+            ConnectButton.IsEnabled = true;
+            PairButton.IsEnabled = true;
+        }
+        else
+        {
+            ConnectButtonText.Text = item.IsCloudSynced ? "一键高刷连接" : "发起高刷连接";
+            ConnectButton.IsEnabled = true;
+            PairButton.IsEnabled = true;
+        }
+
         ConnectButtonIcon.Text = "\uE945";
         PairButton.Visibility = item.IsCloudSynced ? Visibility.Collapsed : Visibility.Visible;
         ActionTargetSummary.Text = item.HostAddress is not null
@@ -836,7 +1000,25 @@ public partial class MainWindow : Window
         if (SelectedListItem is not { } item)
             return;
 
-        if (!NativeStreamBridge.IsAvailable())
+        if (item.IsBeingControlled && item.IsControlledByLocal)
+        {
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
+            ActionEngineHint.Text = "当前本机正在远控该设备，期间本机与目标设备均不可被其他设备远控。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
+        }
+        else if (item.IsBeingControlled)
+        {
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
+            ActionEngineHint.Text = "该设备当前正被其他设备远控，暂不可发起连接。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
+        }
+        else if (item.IsControllingOther)
+        {
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
+            ActionEngineHint.Text = "该设备当前正在远控其他设备，期间不可被其他设备远控。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
+        }
+        else if (!NativeStreamBridge.IsAvailable())
         {
             ActionEngineDot.SetResourceReference(Shape.FillProperty, "Danger");
             ActionEngineHint.Text = "未检测到内置原生控屏引擎 RemoteDesk.StreamCore.dll，请检查程序安装完整性。";

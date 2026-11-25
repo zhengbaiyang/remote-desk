@@ -112,34 +112,39 @@
               Visibility="Collapsed"
               VerticalAlignment="Top"
               HorizontalAlignment="Stretch">
-            <!-- Floating top Dynamic-Capsule pill -->
-            <Border x:Name="FullscreenPullTab"
+            <!-- Top screen-edge hover target (zero top dead zone) -->
+            <Border x:Name="FullscreenTopHoverZone"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Top"
-                    Margin="0,8,0,0"
-                    Background="{StaticResource PillBg}"
-                    BorderBrush="{StaticResource HairlineBrush}"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="14,5"
-                    Cursor="Hand"
-                    RenderTransformOrigin="0.5,0"
-                    MouseEnter="PullTabMouseEnter">
-                <Border.RenderTransform>
-                    <TransformGroup>
-                        <ScaleTransform x:Name="PullTabScale" ScaleX="1" ScaleY="1" />
-                        <TranslateTransform x:Name="PullTabSlide" Y="0" />
-                    </TransformGroup>
-                </Border.RenderTransform>
-                <Border.Effect>
-                    <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.32" />
-                </Border.Effect>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="PullTabDot" Width="7" Height="7" Fill="{StaticResource ReadyBrush}" Margin="0,0,7,0"
-                             ui:MotionBehaviors.EnablePulse="True" />
-                    <Border Width="24" Height="3" CornerRadius="1.5" Background="#88D1D1D6" Margin="0,0,8,0" />
-                    <TextBlock x:Name="PullTabHintText" Text="展开控制栏" Foreground="{StaticResource TextMuted}" FontSize="11" />
-                </StackPanel>
+                    Padding="36,8,36,4"
+                    Background="#01000000"
+                    MouseEnter="PullTabMouseEnter"
+                    MouseLeftButtonDown="PullTabMouseDown">
+                <!-- Floating top Dynamic-Capsule pill -->
+                <Border x:Name="FullscreenPullTab"
+                        Background="{StaticResource PillBg}"
+                        BorderBrush="{StaticResource HairlineBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12"
+                        Padding="14,5"
+                        Cursor="Hand"
+                        RenderTransformOrigin="0.5,0">
+                    <Border.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform x:Name="PullTabScale" ScaleX="1" ScaleY="1" />
+                            <TranslateTransform x:Name="PullTabSlide" Y="0" />
+                        </TransformGroup>
+                    </Border.RenderTransform>
+                    <Border.Effect>
+                        <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.32" />
+                    </Border.Effect>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse x:Name="PullTabDot" Width="7" Height="7" Fill="{StaticResource ReadyBrush}" Margin="0,0,7,0"
+                                 ui:MotionBehaviors.EnablePulse="True" />
+                        <Border Width="24" Height="3" CornerRadius="1.5" Background="#88D1D1D6" Margin="0,0,8,0" />
+                        <TextBlock x:Name="PullTabHintText" Text="展开控制栏" Foreground="{StaticResource TextMuted}" FontSize="11" />
+                    </StackPanel>
+                </Border>
             </Border>
 
             <!-- Expanded fullscreen floating control capsule -->
@@ -194,11 +199,13 @@
                                     Content="办公自由"
                                     Style="{StaticResource OverlayModeSegBtn}"
                                     Tag="Selected"
+                                    ToolTip="默认不锁鼠，光标可自由移出画面 (Ctrl+Alt+G)"
                                     Click="OfficeModeClicked" />
                             <Button x:Name="FsGameModeBtn"
                                     Grid.Column="1"
                                     Content="游戏锁定"
                                     Style="{StaticResource OverlayModeSegBtn}"
+                                    ToolTip="点击画面后锁定光标；按 Ctrl+Alt 释放 (Ctrl+Alt+G)"
                                     Click="GameModeClicked" />
                         </Grid>
                     </Border>
@@ -229,6 +236,12 @@
                             Style="{StaticResource OverlayBtn}"
                             Margin="0,0,5,0"
                             Click="HotkeysClicked" />
+                    <Button x:Name="FsHelpBtn"
+                            Content="操作提示"
+                            Style="{StaticResource OverlayBtn}"
+                            Margin="0,0,5,0"
+                            ToolTip="查看快捷键与基础操作说明 (Ctrl+Alt+H)"
+                            Click="HelpClicked" />
                     <Button x:Name="FsMuteBtn"
                             Content="声音"
                             Style="{StaticResource OverlayBtn}"
@@ -243,15 +256,42 @@
                             Content="退出全屏"
                             Style="{StaticResource OverlayBtn}"
                             Margin="0,0,5,0"
+                            ToolTip="退出无边框全屏 (F11 / Ctrl+Alt+F)"
                             Click="ExitFullscreenClicked" />
                     <Button x:Name="FsDisconnectBtn"
                             Content="断开"
                             Style="{StaticResource OverlayBtn}"
                             Tag="Danger"
+                            ToolTip="断开并关闭远控 (Ctrl+Alt+Shift+Q)"
                             Click="DisconnectClicked" />
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!-- Persistent Click-Through Pointer Lock Escape Hint Banner -->
+        <Border x:Name="LockHintBanner"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Margin="0,12,0,0"
+                Background="{StaticResource PillBg}"
+                BorderBrush="{StaticResource HairlineBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="12,5">
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.32" />
+            </Border.Effect>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Ellipse x:Name="LockHintDot" Width="7" Height="7" Fill="{StaticResource AccentBrush}" Margin="0,0,7,0" />
+                <TextBlock x:Name="LockHintText"
+                           Text="已锁定鼠标 · 按 Ctrl+Alt 释放 · Ctrl+Alt+Shift+Q 断开"
+                           Foreground="{StaticResource TextPrimary}"
+                           FontSize="11.5"
+                           FontWeight="Medium" />
+            </StackPanel>
+        </Border>
 
         <!-- Top-Right Click-Through Telemetry HUD Card -->
         <Border x:Name="TelemetryHudCard"

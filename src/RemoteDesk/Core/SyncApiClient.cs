@@ -247,6 +247,85 @@ internal sealed class SyncApiClient
             ct).ConfigureAwait(false);
     }
 
+    public Task<SyncSessionLeaseResult> AcquireRemoteSessionAsync(
+        string serverUrl,
+        string sessionToken,
+        string sessionId,
+        string controllerDeviceKey,
+        string targetDeviceKey,
+        string? expectedThumbprint,
+        CancellationToken ct = default) =>
+        SendSessionLeaseAsync(
+            serverUrl,
+            sessionToken,
+            "/api/v1/sessions/acquire",
+            new { sessionId, controllerDeviceKey, targetDeviceKey },
+            expectedThumbprint,
+            ct);
+
+    public Task<SyncSessionLeaseResult> HeartbeatRemoteSessionAsync(
+        string serverUrl,
+        string sessionToken,
+        string sessionId,
+        string controllerDeviceKey,
+        string targetDeviceKey,
+        string? expectedThumbprint,
+        CancellationToken ct = default) =>
+        SendSessionLeaseAsync(
+            serverUrl,
+            sessionToken,
+            "/api/v1/sessions/heartbeat",
+            new { sessionId, controllerDeviceKey, targetDeviceKey },
+            expectedThumbprint,
+            ct);
+
+    public Task<SyncSessionLeaseResult> ReleaseRemoteSessionAsync(
+        string serverUrl,
+        string sessionToken,
+        string sessionId,
+        string controllerDeviceKey,
+        string? expectedThumbprint,
+        CancellationToken ct = default) =>
+        SendSessionLeaseAsync(
+            serverUrl,
+            sessionToken,
+            "/api/v1/sessions/release",
+            new { sessionId, controllerDeviceKey },
+            expectedThumbprint,
+            ct);
+
+    private async Task<SyncSessionLeaseResult> SendSessionLeaseAsync(
+        string serverUrl,
+        string sessionToken,
+        string path,
+        object body,
+        string? expectedThumbprint,
+        CancellationToken ct)
+    {
+        var baseUrl = NormalizeServerUrl(serverUrl);
+        try
+        {
+            var (dto, _) = await SendJsonAsync<SessionLeaseWireDto>(
+                baseUrl,
+                HttpMethod.Post,
+                path,
+                token: sessionToken,
+                body: body,
+                expectedThumbprint,
+                allowTrustOnFirstUse: false,
+                ct).ConfigureAwait(false);
+            return new SyncSessionLeaseResult(dto.Ok, UnsupportedByServer: false, null, null, dto.Devices, dto.ServerTimeUtc);
+        }
+        catch (SyncApiException apiErr) when (apiErr.StatusCode == 409)
+        {
+            return new SyncSessionLeaseResult(false, UnsupportedByServer: false, apiErr.ErrorCode, apiErr.Message, null, 0);
+        }
+        catch (SyncApiException apiErr) when (apiErr.StatusCode == 404)
+        {
+            return new SyncSessionLeaseResult(true, UnsupportedByServer: true, null, null, null, 0);
+        }
+    }
+
     private async Task<(T Result, string? ObservedThumbprint)> SendJsonAsync<T>(
         string baseUrl,
         HttpMethod method,
@@ -379,4 +458,5 @@ internal sealed class SyncApiClient
     private sealed record ProfileWireDto(AccountUserInfo User, AccountMeshConfig MeshConfig);
     private sealed record CheckinWireDto(SyncedDeviceInfo Device, IReadOnlyList<SyncedDeviceInfo> Devices, long ServerTimeUtc);
     private sealed record DeviceWrapWireDto(SyncedDeviceInfo Device);
+    private sealed record SessionLeaseWireDto(bool Ok, IReadOnlyList<SyncedDeviceInfo>? Devices, long ServerTimeUtc);
 }

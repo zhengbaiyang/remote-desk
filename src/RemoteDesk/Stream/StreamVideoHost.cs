@@ -24,6 +24,8 @@ internal sealed class StreamVideoHost : HwndHost
     private bool _rawMouseRegistered;
     private bool _hookCtrlDown;
     private bool _hookAltDown;
+    private bool _isPointerLocked;
+    private bool _suppressNextLButtonUp;
 
     private int _hostPixelW = 1280;
     private int _hostPixelH = 720;
@@ -34,9 +36,12 @@ internal sealed class StreamVideoHost : HwndHost
     public IntPtr ChildHwnd => _hwnd;
     public NativeStreamSession? Session { get; set; }
     public ControlInputMode InputMode => _inputMode;
+    public bool IsPointerLocked => _isPointerLocked;
 
-    public event Action<ControlInputMode, string?>? InputModeChanged;
+    public event Action<ControlInputMode, bool, string?>? InputModeChanged;
     public event Action? FullscreenToggleRequested;
+    public event Action? DisconnectRequested;
+    public event Action? HelpToggleRequested;
     public event Action<string[]>? FilesDropped;
 
     public void UpdateStreamDimensions(int streamWidth, int streamHeight)
@@ -45,24 +50,44 @@ internal sealed class StreamVideoHost : HwndHost
         if (streamHeight > 0) _streamH = streamHeight;
     }
 
-    public void SetInputMode(ControlInputMode mode, string? toastReason = null)
+    public void SetInputMode(ControlInputMode mode, string? toastReason = null, bool lockImmediately = false)
     {
-        if (_inputMode == mode)
+        if (mode == ControlInputMode.OfficeFreePointer)
+        {
+            var changed = _inputMode != mode || _isPointerLocked;
+            _inputMode = mode;
+            ExitGameLock();
+            if (changed || !string.IsNullOrWhiteSpace(toastReason))
+                InputModeChanged?.Invoke(_inputMode, false, toastReason);
+            return;
+        }
+
+        var shouldLockNow = SessionInputPolicy.ShouldAutoLockOnModeSwitch(
+            fromToolbarButton: !lockImmediately,
+            IsCursorInsideVideoClient());
+
+        if (_inputMode == mode && _isPointerLocked == shouldLockNow)
             return;
 
         _inputMode = mode;
-        if (mode == ControlInputMode.GameRelativeLock)
+        if (shouldLockNow)
             EnterGameLock();
         else
             ExitGameLock();
 
-        InputModeChanged?.Invoke(_inputMode, toastReason);
+        InputModeChanged?.Invoke(_inputMode, _isPointerLocked, toastReason);
     }
 
     public void ReleaseCaptureForDeactivation()
     {
-        if (_inputMode == ControlInputMode.GameRelativeLock)
+        ClipCursor(IntPtr.Zero);
+        if (_isPointerLocked)
+        {
             SetInputMode(ControlInputMode.OfficeFreePointer, "窗口失去焦点，已自动释放鼠标锁定");
+            return;
+        }
+
+        SendReleaseAllModifiers();
     }
 
     public (int PixelWidth, int PixelHeight) GetCurrentPixelSize()
@@ -151,13 +176,13 @@ internal sealed class StreamVideoHost : HwndHost
                 _hostPixelW = Math.Max(1, (int)(lParam.ToInt64() & 0xFFFF));
                 _hostPixelH = Math.Max(1, (int)((lParam.ToInt64() >> 16) & 0xFFFF));
                 Session?.Resize(_hostPixelW, _hostPixelH);
-                if (_inputMode == ControlInputMode.GameRelativeLock)
+                if (_isPointerLocked)
                     ApplyCursorClip();
                 handled = true;
                 return IntPtr.Zero;
 
             case WM_SETCURSOR:
-                if (_inputMode == ControlInputMode.GameRelativeLock && (lParam.ToInt64() & 0xFFFF) == HTCLIENT)
+                if (_isPointerLocked && (lParam.ToInt64() & 0xFFFF) == HTCLIENT)
                 {
                     SetCursor(IntPtr.Zero);
                     handled = true;
@@ -166,12 +191,14 @@ internal sealed class StreamVideoHost : HwndHost
                 break;
 
             case WM_KILLFOCUS:
-                if (_inputMode == ControlInputMode.GameRelativeLock)
+                if (_isPointerLocked)
                     Dispatcher.BeginInvoke(() => ReleaseCaptureForDeactivation());
+                else
+                    SendReleaseAllModifiers();
                 break;
 
             case WM_MOUSEMOVE:
-                if (_inputMode == ControlInputMode.OfficeFreePointer && Session is not null)
+                if ((_inputMode == ControlInputMode.OfficeFreePointer || !_isPointerLocked) && Session is not null)
                 {
                     var x = (short)(lParam.ToInt64() & 0xFFFF);
                     var y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
@@ -182,18 +209,32 @@ internal sealed class StreamVideoHost : HwndHost
                 return IntPtr.Zero;
 
             case WM_INPUT:
-                if (_inputMode == ControlInputMode.GameRelativeLock && Session is not null)
+                if (_isPointerLocked && Session is not null)
                     ProcessRawMouseInput(lParam);
                 handled = true;
                 return IntPtr.Zero;
 
             case WM_LBUTTONDOWN:
                 SetFocus(hwnd);
+                if (_inputMode == ControlInputMode.GameRelativeLock && !_isPointerLocked)
+                {
+                    EnterGameLock();
+                    _suppressNextLButtonUp = true;
+                    InputModeChanged?.Invoke(_inputMode, true, "已锁定鼠标 · 按 Ctrl+Alt 释放 · Ctrl+Alt+Shift+Q 断开");
+                    handled = true;
+                    return IntPtr.Zero;
+                }
                 Session?.SendMouseButton(NativeStreamBridge.BtnActionPress, NativeStreamBridge.BtnLeft);
                 handled = true;
                 return IntPtr.Zero;
 
             case WM_LBUTTONUP:
+                if (_suppressNextLButtonUp)
+                {
+                    _suppressNextLButtonUp = false;
+                    handled = true;
+                    return IntPtr.Zero;
+                }
                 Session?.SendMouseButton(NativeStreamBridge.BtnActionRelease, NativeStreamBridge.BtnLeft);
                 handled = true;
                 return IntPtr.Zero;
@@ -304,8 +345,26 @@ internal sealed class StreamVideoHost : HwndHost
         _hostPixelW = pw;
         _hostPixelH = ph;
         Session?.Resize(pw, ph);
-        if (_inputMode == ControlInputMode.GameRelativeLock)
+        if (_isPointerLocked)
             ApplyCursorClip();
+    }
+
+    public bool TryHandleWindowShortcut(System.Windows.Input.Key key, System.Windows.Input.ModifierKeys modifiers)
+    {
+        var vk = System.Windows.Input.KeyInterop.VirtualKeyFromKey(key);
+        if (vk == 0)
+            return false;
+
+        var ctrlDown = (modifiers & System.Windows.Input.ModifierKeys.Control) != 0;
+        var altDown = (modifiers & System.Windows.Input.ModifierKeys.Alt) != 0;
+        var shiftDown = (modifiers & System.Windows.Input.ModifierKeys.Shift) != 0;
+
+        var action = SessionInputPolicy.ResolveShortcut(vk, isKeyDown: true, ctrlDown, altDown, shiftDown, _isPointerLocked);
+        if (action == SessionShortcutAction.None)
+            return false;
+
+        ExecuteShortcutAction(action, synchronous: true);
+        return true;
     }
 
     private bool HandleKeyMessage(uint msg, IntPtr wParam, IntPtr lParam)
@@ -318,26 +377,91 @@ internal sealed class StreamVideoHost : HwndHost
         var altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
         var shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
-        if (isDown && vk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
+        var action = SessionInputPolicy.ResolveShortcut(vk, isDown, ctrlDown, altDown, shiftDown, _isPointerLocked);
+        if (action != SessionShortcutAction.None)
         {
-            Dispatcher.BeginInvoke(() => FullscreenToggleRequested?.Invoke());
+            if (action == SessionShortcutAction.ReleasePointerLock)
+                ClipCursor(IntPtr.Zero);
+            Dispatcher.BeginInvoke(() => ExecuteShortcutAction(action, synchronous: true));
             return true;
         }
 
-        if (isDown && vk == 'G' && ctrlDown && altDown && !shiftDown)
-        {
-            var next = _inputMode == ControlInputMode.OfficeFreePointer
-                ? ControlInputMode.GameRelativeLock
-                : ControlInputMode.OfficeFreePointer;
-            Dispatcher.BeginInvoke(() => SetInputMode(next,
-                next == ControlInputMode.GameRelativeLock
-                    ? "游戏锁定模式：按 Ctrl+Alt 释放光标"
-                    : "已切换回办公自由指针模式"));
+        if (!isDown && vk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
             return true;
-        }
 
         SendKeyToRemote(vk, isDown, isExtended);
         return true;
+    }
+
+    private void ExecuteShortcutAction(SessionShortcutAction action, bool synchronous)
+    {
+        switch (action)
+        {
+            case SessionShortcutAction.ReleasePointerLock:
+                ClipCursor(IntPtr.Zero);
+                if (synchronous)
+                    SetInputMode(ControlInputMode.OfficeFreePointer, "已按 Ctrl+Alt 释放鼠标，可自由操作界面");
+                else
+                    Dispatcher.BeginInvoke(() => SetInputMode(ControlInputMode.OfficeFreePointer, "已按 Ctrl+Alt 释放鼠标，可自由操作界面"));
+                break;
+
+            case SessionShortcutAction.ToggleInputMode:
+                void ToggleMode()
+                {
+                    var next = _inputMode == ControlInputMode.OfficeFreePointer
+                        ? ControlInputMode.GameRelativeLock
+                        : ControlInputMode.OfficeFreePointer;
+                    var willLock = next == ControlInputMode.GameRelativeLock && IsCursorInsideVideoClient();
+                    var reason = next == ControlInputMode.GameRelativeLock
+                        ? (willLock
+                            ? "已进入游戏锁定模式 · 按 Ctrl+Alt 释放光标"
+                            : "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放")
+                        : "已切换回办公自由指针模式";
+                    SetInputMode(next, reason, lockImmediately: true);
+                }
+
+                if (synchronous) ToggleMode();
+                else Dispatcher.BeginInvoke(ToggleMode);
+                break;
+
+            case SessionShortcutAction.ToggleFullscreen:
+                if (synchronous) FullscreenToggleRequested?.Invoke();
+                else Dispatcher.BeginInvoke(() => FullscreenToggleRequested?.Invoke());
+                break;
+
+            case SessionShortcutAction.DisconnectSession:
+                void Disconnect()
+                {
+                    SetInputMode(ControlInputMode.OfficeFreePointer, null);
+                    DisconnectRequested?.Invoke();
+                }
+
+                if (synchronous) Disconnect();
+                else Dispatcher.BeginInvoke(Disconnect);
+                break;
+
+            case SessionShortcutAction.ToggleHelpOverlay:
+                void ToggleHelp()
+                {
+                    SetInputMode(ControlInputMode.OfficeFreePointer, null);
+                    HelpToggleRequested?.Invoke();
+                }
+
+                if (synchronous) ToggleHelp();
+                else Dispatcher.BeginInvoke(ToggleHelp);
+                break;
+        }
+    }
+
+    private void SendReleaseAllModifiers()
+    {
+        if (Session is null)
+            return;
+
+        Session.SendKeyEvent(VK_CONTROL, NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(VK_MENU, NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(VK_SHIFT, NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(VK_LWIN, NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
     }
 
     private void SendKeyToRemote(short vk, bool isDown, bool isExtended)
@@ -382,6 +506,7 @@ internal sealed class StreamVideoHost : HwndHost
                 var dx = (short)Math.Clamp(mouse.lLastX, short.MinValue, short.MaxValue);
                 var dy = (short)Math.Clamp(mouse.lLastY, short.MinValue, short.MaxValue);
                 Session?.SendMouseMove(dx, dy);
+                RecenterCursorInHost();
             }
         }
         finally
@@ -390,14 +515,43 @@ internal sealed class StreamVideoHost : HwndHost
         }
     }
 
+    private bool IsCursorInsideVideoClient()
+    {
+        if (_hwnd == IntPtr.Zero || !GetCursorPos(out var pt) || !GetClientRect(_hwnd, out var rc))
+            return false;
+
+        var topLeft = new POINT { X = rc.Left, Y = rc.Top };
+        var bottomRight = new POINT { X = rc.Right, Y = rc.Bottom };
+        if (!ClientToScreen(_hwnd, ref topLeft) || !ClientToScreen(_hwnd, ref bottomRight))
+            return false;
+
+        return pt.X >= topLeft.X && pt.X < bottomRight.X && pt.Y >= topLeft.Y && pt.Y < bottomRight.Y;
+    }
+
+    private void RecenterCursorInHost()
+    {
+        if (!_isPointerLocked || _hwnd == IntPtr.Zero || !GetClientRect(_hwnd, out var rc))
+            return;
+
+        var center = new POINT
+        {
+            X = (rc.Left + rc.Right) / 2,
+            Y = (rc.Top + rc.Bottom) / 2,
+        };
+        if (ClientToScreen(_hwnd, ref center))
+            SetCursorPos(center.X, center.Y);
+    }
+
     private void EnterGameLock()
     {
         if (_hwnd == IntPtr.Zero)
             return;
 
+        _isPointerLocked = true;
         _topLevelHwnd = GetAncestor(_hwnd, GA_ROOT);
         SetFocus(_hwnd);
         ApplyCursorClip();
+        RecenterCursorInHost();
         SetCursor(IntPtr.Zero);
 
         if (!_rawMouseRegistered)
@@ -426,6 +580,9 @@ internal sealed class StreamVideoHost : HwndHost
 
     private void ExitGameLock()
     {
+        var wasLocked = _isPointerLocked;
+        _isPointerLocked = false;
+        _suppressNextLButtonUp = false;
         ClipCursor(IntPtr.Zero);
         if (_hwnd != IntPtr.Zero)
             SetCursor(LoadCursor(IntPtr.Zero, IDC_ARROW));
@@ -454,6 +611,9 @@ internal sealed class StreamVideoHost : HwndHost
         _hookProc = null;
         _hookCtrlDown = false;
         _hookAltDown = false;
+
+        if (wasLocked)
+            SendReleaseAllModifiers();
     }
 
     private void ApplyCursorClip()
@@ -478,7 +638,7 @@ internal sealed class StreamVideoHost : HwndHost
 
     private IntPtr LowLevelKeyboardHookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && _inputMode == ControlInputMode.GameRelativeLock)
+        if (nCode >= 0 && _isPointerLocked)
         {
             var msg = (uint)wParam.ToInt64();
             var kb = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
@@ -493,26 +653,24 @@ internal sealed class StreamVideoHost : HwndHost
 
             if (_topLevelHwnd != IntPtr.Zero && GetForegroundWindow() != _topLevelHwnd)
             {
+                ClipCursor(IntPtr.Zero);
                 Dispatcher.BeginInvoke(() => ReleaseCaptureForDeactivation());
                 return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
             }
 
-            // Ctrl + Alt immediately releases Game Mode cursor lock cleanly.
-            if (!isUp && _hookCtrlDown && _hookAltDown)
+            var ctrlDown = _hookCtrlDown || (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            var altDown = _hookAltDown || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0 || (kb.flags & LLKHF_ALTDOWN) != 0;
+            var shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+            var action = SessionInputPolicy.ResolveShortcut(vk, !isUp, ctrlDown, altDown, shiftDown, isPointerLocked: true);
+            if (action != SessionShortcutAction.None)
             {
                 ClipCursor(IntPtr.Zero);
-                Dispatcher.BeginInvoke(() => SetInputMode(ControlInputMode.OfficeFreePointer, "已按 Ctrl+Alt 释放鼠标"));
-                return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
-            }
-
-            if (!isUp && vk == VK_F11)
-            {
-                Dispatcher.BeginInvoke(() => FullscreenToggleRequested?.Invoke());
+                ExecuteShortcutAction(action, synchronous: false);
                 return (IntPtr)1;
             }
 
-            var altHeld = _hookAltDown || (kb.flags & LLKHF_ALTDOWN) != 0;
-            if (vk is VK_LWIN or VK_RWIN or VK_APPS || (altHeld && vk is VK_TAB or VK_ESCAPE))
+            if (SessionInputPolicy.ShouldForwardSystemKeyToRemote(vk, altDown, _isPointerLocked))
             {
                 SendKeyToRemote(vk, !isUp, isExtended);
                 return (IntPtr)1;
@@ -727,6 +885,14 @@ internal sealed class StreamVideoHost : HwndHost
 
     [DllImport("user32.dll")]
     private static extern bool ClipCursor(IntPtr lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int X, int Y);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetCursor(IntPtr hCursor);
