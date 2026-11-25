@@ -15,7 +15,8 @@ internal sealed record AgentPeerServerState(
     string? AgentAuthKey,
     bool SecurityPinRequired,
     string? SecurityPinSalt,
-    string? SecurityPinHash);
+    string? SecurityPinHash,
+    string? AgentVersion = null);
 
 internal sealed record AgentPeerFeatureHandlers(
     Func<CancellationToken, Task<AgentClipboardDto>>? GetClipboardAsync = null,
@@ -253,7 +254,8 @@ internal sealed class AgentPeerServer : IDisposable
                 Hostname: state.Hostname,
                 SunshineReady: state.SunshineReady,
                 SunshinePort: state.SunshinePort,
-                SecurityPinRequired: state.SecurityPinRequired);
+                SecurityPinRequired: state.SecurityPinRequired,
+                AgentVersion: state.AgentVersion ?? typeof(AgentPeerServer).Assembly.GetName().Version?.ToString(3));
             await WriteJsonResponseAsync(stream, 200, "OK", info, effectiveCt).ConfigureAwait(false);
             return;
         }

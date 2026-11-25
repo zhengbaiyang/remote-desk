@@ -92,131 +92,159 @@ internal sealed class GameStreamClient
 
         var certUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&phrase=getservercert&salt={ToLowerHex(salt)}&clientcert={_identity.ClientCertPemHex}";
 
-        // Sunshine blocks /pair?phrase=getservercert until /api/pin is posted, while mocks or older hosts return immediately.
+        // Sunshine blocks /pair?phrase=getservercert until /api/pin is posted, and Sunshine 2026
+        // keeps POST /api/pin open until the full pairing handshake completes. Run onPinReadyAsync
+        // concurrently so Steps 2-6 execute without deadlocking on POST /api/pin.
         using var pairCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var pinCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var getCertTask = SendHttpGetAsync(certUrl, PairTimeout, pairCts.Token);
-        var pinCallbackDone = false;
-        Exception? pinCallbackException = null;
-
-        if (onPinReadyAsync is not null)
-        {
-            await Task.WhenAny(getCertTask, Task.Delay(300, ct)).ConfigureAwait(false);
-            if (!getCertTask.IsCompleted)
-            {
-                try
-                {
-                    await onPinReadyAsync(ct).ConfigureAwait(false);
-                    pinCallbackDone = true;
-                }
-                catch (Exception ex)
-                {
-                    pinCallbackException = ex;
-                    try { pairCts.Cancel(); } catch { }
-                }
-            }
-        }
+        Task? pinTask = null;
 
         string certXml;
         try
         {
-            certXml = await getCertTask.ConfigureAwait(false);
+            if (onPinReadyAsync is not null)
+            {
+                await Task.WhenAny(getCertTask, Task.Delay(300, ct)).ConfigureAwait(false);
+                if (!getCertTask.IsCompleted)
+                {
+                    pinTask = Task.Run(() => onPinReadyAsync(pinCts.Token), ct);
+                }
+            }
+
+            if (pinTask is not null)
+            {
+                var first = await Task.WhenAny(getCertTask, pinTask).ConfigureAwait(false);
+                if (first == pinTask)
+                {
+                    if (pinTask.IsFaulted || pinTask.IsCanceled)
+                    {
+                        try { pairCts.Cancel(); } catch { }
+                        await pinTask.ConfigureAwait(false);
+                    }
+                    certXml = await getCertTask.ConfigureAwait(false);
+                }
+                else
+                {
+                    if (getCertTask.IsFaulted || getCertTask.IsCanceled)
+                    {
+                        await Task.WhenAny(pinTask, Task.Delay(TimeSpan.FromSeconds(2.5), ct)).ConfigureAwait(false);
+                        if (pinTask.IsFaulted || pinTask.IsCanceled)
+                            await pinTask.ConfigureAwait(false);
+                    }
+                    certXml = await getCertTask.ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                certXml = await getCertTask.ConfigureAwait(false);
+                if (onPinReadyAsync is not null)
+                {
+                    await onPinReadyAsync(ct).ConfigureAwait(false);
+                }
+            }
+
+            var certDoc = ParseXml(certXml);
+            var paired = GetElementInt(certDoc, "paired", 0);
+            if (paired != 1)
+            {
+                if (pinTask is not null)
+                {
+                    await Task.WhenAny(pinTask, Task.Delay(TimeSpan.FromSeconds(1), ct)).ConfigureAwait(false);
+                    if (pinTask.IsFaulted || pinTask.IsCanceled)
+                        await pinTask.ConfigureAwait(false);
+                }
+                return (false, "Sunshine 拒绝了证书交换请求（可能配对已被取消）。");
+            }
+
+            var plainCertHex = GetElementText(certDoc, "plaincert");
+            if (string.IsNullOrWhiteSpace(plainCertHex))
+                return (false, "目标主机未返回服务端证书。");
+
+            var serverCertPem = Encoding.ASCII.GetString(Convert.FromHexString(plainCertHex.Trim()));
+            using var serverCert = X509Certificate2.CreateFromPem(serverCertPem);
+            var serverCertSig = GameStreamIdentity.ExtractCertificateSignatureBytes(serverCert);
+
+            // 2. Client challenge
+            var clientChallenge = RandomNumberGenerator.GetBytes(16);
+            var encClientChallenge = Aes128EcbEncrypt(aesKey, clientChallenge);
+            var challengeUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&clientchallenge={ToLowerHex(encClientChallenge)}";
+            var challengeDoc = ParseXml(await SendHttpGetAsync(challengeUrl, PairTimeout, ct).ConfigureAwait(false));
+            if (GetElementInt(challengeDoc, "paired", 0) != 1)
+                return (false, "配对质询失败（PIN 码可能不匹配）。");
+
+            var challengeRespHex = GetElementText(challengeDoc, "challengeresponse");
+            if (string.IsNullOrWhiteSpace(challengeRespHex))
+                return (false, "目标主机未返回 challengeresponse。");
+
+            var decChallengeResp = Aes128EcbDecrypt(aesKey, Convert.FromHexString(challengeRespHex.Trim()));
+            if (decChallengeResp.Length < hashLen + 16)
+                return (false, "challengeresponse 长度无效。");
+
+            var serverResponseHash = decChallengeResp.AsSpan(0, hashLen).ToArray();
+            var serverChallenge = decChallengeResp.AsSpan(hashLen, 16).ToArray();
+
+            // 3. Client secret + response hash
+            var clientSecret = RandomNumberGenerator.GetBytes(16);
+            var respInput = ConcatBytes(serverChallenge, _identity.ClientCertSignature, clientSecret);
+            var challengeRespHash = ComputeHash(respInput, useSha256);
+            var encRespHash = Aes128EcbEncrypt(aesKey, PadToBlock16(challengeRespHash));
+            var serverRespUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&serverchallengeresp={ToLowerHex(encRespHash)}";
+            var pairingSecretDoc = ParseXml(await SendHttpGetAsync(serverRespUrl, PairTimeout, ct).ConfigureAwait(false));
+            if (GetElementInt(pairingSecretDoc, "paired", 0) != 1)
+                return (false, "服务端响应校验未通过。");
+
+            var pairingSecretHex = GetElementText(pairingSecretDoc, "pairingsecret");
+            if (string.IsNullOrWhiteSpace(pairingSecretHex))
+                return (false, "目标主机未返回 pairingsecret。");
+
+            var pairingSecretBytes = Convert.FromHexString(pairingSecretHex.Trim());
+            if (pairingSecretBytes.Length <= 16)
+                return (false, "pairingsecret 长度异常。");
+
+            var serverSecret = pairingSecretBytes.AsSpan(0, 16).ToArray();
+            var serverSig = pairingSecretBytes.AsSpan(16).ToArray();
+
+            // 4. Verify server RSA signature over serverSecret & verify serverResponseHash
+            using var serverRsa = serverCert.GetRSAPublicKey()
+                ?? throw new InvalidDataException("目标主机证书不包含 RSA 公钥。");
+            var hashAlgName = useSha256 ? HashAlgorithmName.SHA256 : HashAlgorithmName.SHA1;
+            if (!serverRsa.VerifyData(serverSecret, serverSig, hashAlgName, RSASignaturePadding.Pkcs1))
+                return (false, "目标主机 RSA 签名校验失败，请检查网络安全。");
+
+            var expectedServerHash = ComputeHash(ConcatBytes(clientChallenge, serverCertSig, serverSecret), useSha256);
+            if (!CryptographicOperations.FixedTimeEquals(expectedServerHash, serverResponseHash))
+                return (false, "PIN 码校验失败（主机密钥不一致）。");
+
+            // 5. Sign clientSecret and send clientpairingsecret
+            var clientSig = _identity.PrivateKey.SignData(clientSecret, hashAlgName, RSASignaturePadding.Pkcs1);
+            var clientPairingSecret = ConcatBytes(clientSecret, clientSig);
+            var clientSecretUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&clientpairingsecret={ToLowerHex(clientPairingSecret)}";
+            var clientSecretDoc = ParseXml(await SendHttpGetAsync(clientSecretUrl, PairTimeout, ct).ConfigureAwait(false));
+            if (GetElementInt(clientSecretDoc, "paired", 0) != 1)
+                return (false, "客户端配对凭据提交失败。");
+
+            // 6. Final mTLS HTTPS pairchallenge
+            var challengeVerifyUrl = $"https://{uriHost}:{HttpsPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&phrase=pairchallenge";
+            var finalDoc = ParseXml(await SendHttpsGetAsync(challengeVerifyUrl, PairTimeout, ct).ConfigureAwait(false));
+            if (GetElementInt(finalDoc, "paired", 0) != 1)
+                return (false, "HTTPS mTLS 最终配对校验未通过。");
+
+            if (pinTask is not null)
+            {
+                await Task.WhenAny(pinTask, Task.Delay(TimeSpan.FromSeconds(3), ct)).ConfigureAwait(false);
+            }
+
+            return (true, "原生加密配对已完成。");
         }
-        catch (OperationCanceledException) when (pinCallbackException is not null && !ct.IsCancellationRequested)
+        finally
         {
-            throw pinCallbackException;
+            try { pairCts.Cancel(); } catch { }
+            try { pinCts.Cancel(); } catch { }
+            ObserveTaskFault(getCertTask);
+            if (pinTask is not null)
+                ObserveTaskFault(pinTask);
         }
-        catch when (pinCallbackException is not null)
-        {
-            throw pinCallbackException;
-        }
-
-        if (pinCallbackException is not null)
-            throw pinCallbackException;
-
-        if (!pinCallbackDone && onPinReadyAsync is not null)
-        {
-            await onPinReadyAsync(ct).ConfigureAwait(false);
-        }
-
-        var certDoc = ParseXml(certXml);
-        var paired = GetElementInt(certDoc, "paired", 0);
-        if (paired != 1)
-            return (false, "Sunshine 拒绝了证书交换请求（可能配对已被取消）。");
-
-        var plainCertHex = GetElementText(certDoc, "plaincert");
-        if (string.IsNullOrWhiteSpace(plainCertHex))
-            return (false, "目标主机未返回服务端证书。");
-
-        var serverCertPem = Encoding.ASCII.GetString(Convert.FromHexString(plainCertHex.Trim()));
-        using var serverCert = X509Certificate2.CreateFromPem(serverCertPem);
-        var serverCertSig = GameStreamIdentity.ExtractCertificateSignatureBytes(serverCert);
-
-        // 2. Client challenge
-        var clientChallenge = RandomNumberGenerator.GetBytes(16);
-        var encClientChallenge = Aes128EcbEncrypt(aesKey, clientChallenge);
-        var challengeUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&clientchallenge={ToLowerHex(encClientChallenge)}";
-        var challengeDoc = ParseXml(await SendHttpGetAsync(challengeUrl, PairTimeout, ct).ConfigureAwait(false));
-        if (GetElementInt(challengeDoc, "paired", 0) != 1)
-            return (false, "配对质询失败（PIN 码可能不匹配）。");
-
-        var challengeRespHex = GetElementText(challengeDoc, "challengeresponse");
-        if (string.IsNullOrWhiteSpace(challengeRespHex))
-            return (false, "目标主机未返回 challengeresponse。");
-
-        var decChallengeResp = Aes128EcbDecrypt(aesKey, Convert.FromHexString(challengeRespHex.Trim()));
-        if (decChallengeResp.Length < hashLen + 16)
-            return (false, "challengeresponse 长度无效。");
-
-        var serverResponseHash = decChallengeResp.AsSpan(0, hashLen).ToArray();
-        var serverChallenge = decChallengeResp.AsSpan(hashLen, 16).ToArray();
-
-        // 3. Client secret + response hash
-        var clientSecret = RandomNumberGenerator.GetBytes(16);
-        var respInput = ConcatBytes(serverChallenge, _identity.ClientCertSignature, clientSecret);
-        var challengeRespHash = ComputeHash(respInput, useSha256);
-        var encRespHash = Aes128EcbEncrypt(aesKey, PadToBlock16(challengeRespHash));
-        var serverRespUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&serverchallengeresp={ToLowerHex(encRespHash)}";
-        var pairingSecretDoc = ParseXml(await SendHttpGetAsync(serverRespUrl, PairTimeout, ct).ConfigureAwait(false));
-        if (GetElementInt(pairingSecretDoc, "paired", 0) != 1)
-            return (false, "服务端响应校验未通过。");
-
-        var pairingSecretHex = GetElementText(pairingSecretDoc, "pairingsecret");
-        if (string.IsNullOrWhiteSpace(pairingSecretHex))
-            return (false, "目标主机未返回 pairingsecret。");
-
-        var pairingSecretBytes = Convert.FromHexString(pairingSecretHex.Trim());
-        if (pairingSecretBytes.Length <= 16)
-            return (false, "pairingsecret 长度异常。");
-
-        var serverSecret = pairingSecretBytes.AsSpan(0, 16).ToArray();
-        var serverSig = pairingSecretBytes.AsSpan(16).ToArray();
-
-        // 4. Verify server RSA signature over serverSecret & verify serverResponseHash
-        using var serverRsa = serverCert.GetRSAPublicKey()
-            ?? throw new InvalidDataException("目标主机证书不包含 RSA 公钥。");
-        var hashAlgName = useSha256 ? HashAlgorithmName.SHA256 : HashAlgorithmName.SHA1;
-        if (!serverRsa.VerifyData(serverSecret, serverSig, hashAlgName, RSASignaturePadding.Pkcs1))
-            return (false, "目标主机 RSA 签名校验失败，请检查网络安全。");
-
-        var expectedServerHash = ComputeHash(ConcatBytes(clientChallenge, serverCertSig, serverSecret), useSha256);
-        if (!CryptographicOperations.FixedTimeEquals(expectedServerHash, serverResponseHash))
-            return (false, "PIN 码校验失败（主机密钥不一致）。");
-
-        // 5. Sign clientSecret and send clientpairingsecret
-        var clientSig = _identity.PrivateKey.SignData(clientSecret, hashAlgName, RSASignaturePadding.Pkcs1);
-        var clientPairingSecret = ConcatBytes(clientSecret, clientSig);
-        var clientSecretUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&clientpairingsecret={ToLowerHex(clientPairingSecret)}";
-        var clientSecretDoc = ParseXml(await SendHttpGetAsync(clientSecretUrl, PairTimeout, ct).ConfigureAwait(false));
-        if (GetElementInt(clientSecretDoc, "paired", 0) != 1)
-            return (false, "客户端配对凭据提交失败。");
-
-        // 6. Final mTLS HTTPS pairchallenge
-        var challengeVerifyUrl = $"https://{uriHost}:{HttpsPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&phrase=pairchallenge";
-        var finalDoc = ParseXml(await SendHttpsGetAsync(challengeVerifyUrl, PairTimeout, ct).ConfigureAwait(false));
-        if (GetElementInt(finalDoc, "paired", 0) != 1)
-            return (false, "HTTPS mTLS 最终配对校验未通过。");
-
-        return (true, "原生加密配对已完成。");
     }
 
     public async Task<IReadOnlyList<GameStreamAppInfo>> GetAppListAsync(string host, CancellationToken ct = default)
@@ -287,6 +315,18 @@ internal sealed class GameStreamClient
     internal static GameStreamServerInfo ParseServerInfoXml(string xml)
     {
         var doc = ParseXml(xml);
+        var statusCodeAttr = doc.Root?.Attribute("status_code")?.Value;
+        if (!string.IsNullOrWhiteSpace(statusCodeAttr) &&
+            int.TryParse(statusCodeAttr.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var statusCode) &&
+            statusCode != 200)
+        {
+            var statusMessage = doc.Root?.Attribute("status_message")?.Value;
+            throw new InvalidDataException(
+                string.IsNullOrWhiteSpace(statusMessage)
+                    ? $"Sunshine /serverinfo 返回状态码 {statusCode}。"
+                    : $"Sunshine /serverinfo 返回状态码 {statusCode}：{statusMessage}");
+        }
+
         var appVersion = GetElementText(doc, "appversion") ?? "7.1.431.-1";
         var major = ParseMajorVersion(appVersion);
         return new GameStreamServerInfo(
@@ -339,19 +379,23 @@ internal sealed class GameStreamClient
         return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
     }
 
+    internal static SocketsHttpHandler CreateDefaultHttpsHandler(X509Certificate2 clientCertificate) =>
+        new()
+        {
+            UseProxy = false,
+            SslOptions = new SslClientAuthenticationOptions
+            {
+                AllowTlsResume = false,
+                RemoteCertificateValidationCallback = (_, _, _, _) => true,
+                ClientCertificates = new X509CertificateCollection { clientCertificate },
+            },
+        };
+
     private async Task<string> SendHttpsGetAsync(string url, TimeSpan timeout, CancellationToken ct)
     {
-        HttpClientHandler? handler = null;
-        if (_customHandler is null)
-        {
-            handler = new HttpClientHandler
-            {
-                UseProxy = false,
-                ClientCertificateOptions = ClientCertificateOption.Manual,
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
-            };
-            handler.ClientCertificates.Add(_identity.ClientCertificate);
-        }
+        SocketsHttpHandler? handler = _customHandler is null
+            ? CreateDefaultHttpsHandler(_identity.ClientCertificate)
+            : null;
 
         try
         {
@@ -449,4 +493,11 @@ internal sealed class GameStreamClient
 
     private static string ToLowerHex(byte[] bytes) =>
         Convert.ToHexString(bytes).ToLowerInvariant();
+
+    private static void ObserveTaskFault(Task task) =>
+        _ = task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 }

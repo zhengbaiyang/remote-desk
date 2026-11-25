@@ -134,6 +134,14 @@ internal sealed class AutoPairOrchestrator
                                 throw new InvalidOperationException(resp.Message ?? "目标电脑未开启「允许本机被控」。");
                             }
 
+                            if (!string.IsNullOrEmpty(resp.Message) &&
+                                resp.Message.Contains("HTTP 400", StringComparison.Ordinal) &&
+                                !resp.Message.Contains("CSRF", StringComparison.OrdinalIgnoreCase) &&
+                                string.IsNullOrEmpty(info.AgentVersion))
+                            {
+                                throw new InvalidOperationException("目标电脑的 RemoteDesk 版本过旧（暂不支持 Sunshine 2026 配对接口），请先将目标电脑的 RemoteDesk 更新到最新版本后重试。");
+                            }
+
                             await Task.Delay(450, token).ConfigureAwait(false);
                         }
 

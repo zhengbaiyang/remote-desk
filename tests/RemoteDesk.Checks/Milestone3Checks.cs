@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -675,6 +676,333 @@ internal static class Milestone3Checks
             {
                 if (Directory.Exists(dir))
                     Directory.Delete(dir, recursive: true);
+            }
+        }),
+
+        ("GameStreamClient.PairWithPinAsync does not deadlock when POST /api/pin blocks until pairchallenge", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "gs-sunshine2026-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                using var serverRsa = RSA.Create(2048);
+                var certReq = new CertificateRequest("CN=Sunshine-2026-Mock", serverRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                using var serverCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
+                var serverCertPemHex = Convert.ToHexString(Encoding.ASCII.GetBytes(
+                    serverCert.ExportCertificatePem().Replace("\r\n", "\n", StringComparison.Ordinal))).ToLowerInvariant();
+                var serverCertSig = GameStreamIdentity.ExtractCertificateSignatureBytes(serverCert);
+                var serverChallenge = RandomNumberGenerator.GetBytes(16);
+                var serverSecret = RandomNumberGenerator.GetBytes(16);
+
+                var pinGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var pairDoneGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                byte[] aesKey = [];
+                byte[] clientCertPem = [];
+
+                static Dictionary<string, string> ParseQueryParams(string q)
+                {
+                    var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var part in q.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var eq = part.IndexOf('=');
+                        if (eq > 0)
+                            d[Uri.UnescapeDataString(part[..eq])] = Uri.UnescapeDataString(part[(eq + 1)..]);
+                    }
+                    return d;
+                }
+
+                static byte[] Concat(params byte[][] arrays)
+                {
+                    var res = new byte[arrays.Sum(a => a.Length)];
+                    var off = 0;
+                    foreach (var a in arrays)
+                    {
+                        Buffer.BlockCopy(a, 0, res, off, a.Length);
+                        off += a.Length;
+                    }
+                    return res;
+                }
+
+                using var handler = new DelegateHttpHandler(async (req, ct) =>
+                {
+                    var uri = req.RequestUri!;
+                    var query = ParseQueryParams(uri.Query);
+
+                    if (uri.AbsolutePath == "/serverinfo")
+                    {
+                        if (string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent(
+                                    "<root status_code=\"401\" status_message=\"Certificate verification failed.\"/>",
+                                    Encoding.UTF8,
+                                    "application/xml"),
+                            };
+                        }
+                        return new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "<root status_code=\"200\"><hostname>SUN2026</hostname><appversion>7.1.431.-1</appversion><PairStatus>0</PairStatus><ServerCodecModeSupport>1835777</ServerCodecModeSupport></root>",
+                                Encoding.UTF8,
+                                "application/xml"),
+                        };
+                    }
+
+                    if (uri.AbsolutePath == "/pair")
+                    {
+                        if (query.TryGetValue("phrase", out var phrase) && phrase == "getservercert")
+                        {
+                            await pinGate.Task.WaitAsync(ct).ConfigureAwait(false);
+                            var salt = Convert.FromHexString(query["salt"]);
+                            aesKey = SHA256.HashData(Concat(salt, "4829"u8.ToArray()))[..16];
+                            clientCertPem = Convert.FromHexString(query["clientcert"]);
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent($"<root status_code=\"200\"><paired>1</paired><plaincert>{serverCertPemHex}</plaincert></root>", Encoding.UTF8, "application/xml"),
+                            };
+                        }
+
+                        if (query.TryGetValue("clientchallenge", out var encChallengeHex))
+                        {
+                            var clientChallenge = GameStreamClient.Aes128EcbDecrypt(aesKey, Convert.FromHexString(encChallengeHex));
+                            var serverHash = SHA256.HashData(Concat(clientChallenge, serverCertSig, serverSecret));
+                            var encResp = GameStreamClient.Aes128EcbEncrypt(aesKey, Concat(serverHash, serverChallenge));
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent($"<root status_code=\"200\"><paired>1</paired><challengeresponse>{Convert.ToHexString(encResp).ToLowerInvariant()}</challengeresponse></root>", Encoding.UTF8, "application/xml"),
+                            };
+                        }
+
+                        if (query.ContainsKey("serverchallengeresp"))
+                        {
+                            var serverSig = serverRsa.SignData(serverSecret, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                            var pairingSecret = Concat(serverSecret, serverSig);
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent($"<root status_code=\"200\"><paired>1</paired><pairingsecret>{Convert.ToHexString(pairingSecret).ToLowerInvariant()}</pairingsecret></root>", Encoding.UTF8, "application/xml"),
+                            };
+                        }
+
+                        if (query.TryGetValue("clientpairingsecret", out var clientSecretHex))
+                        {
+                            var bytes = Convert.FromHexString(clientSecretHex);
+                            using var clientCert = X509Certificate2.CreateFromPem(Encoding.ASCII.GetString(clientCertPem));
+                            using var clientRsa = clientCert.GetRSAPublicKey()!;
+                            var okSig = clientRsa.VerifyData(bytes[..16], bytes[16..], HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent($"<root status_code=\"200\"><paired>{(okSig ? 1 : 0)}</paired></root>", Encoding.UTF8, "application/xml"),
+                            };
+                        }
+
+                        if (query.TryGetValue("phrase", out var finalPhrase) && finalPhrase == "pairchallenge")
+                        {
+                            pairDoneGate.TrySetResult();
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent("<root status_code=\"200\"><paired>1</paired></root>", Encoding.UTF8, "application/xml"),
+                            };
+                        }
+                    }
+
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                });
+
+                var client = new GameStreamClient(id, handler);
+                var pinCallbackFinished = false;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var (ok, _) = client.PairWithPinAsync(
+                    "10.126.126.9",
+                    "4829",
+                    onPinReadyAsync: async token =>
+                    {
+                        pinGate.TrySetResult();
+                        // Simulate Sunshine 2026 keeping POST /api/pin blocked until pairchallenge completes!
+                        await pairDoneGate.Task.WaitAsync(token).ConfigureAwait(false);
+                        pinCallbackFinished = true;
+                    }).GetAwaiter().GetResult();
+                sw.Stop();
+
+                Equal(true, ok);
+                Equal(true, pairDoneGate.Task.IsCompleted);
+                Equal(true, pinCallbackFinished);
+                Equal(true, sw.Elapsed < TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
+            }
+        }),
+
+        ("GameStreamClient.GetServerInfoAsync falls back to HTTP when HTTPS returns status_code=401", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "gs-serverinfo401-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Throws<InvalidDataException>(() =>
+                    GameStreamClient.ParseServerInfoXml("<root status_code=\"401\" status_message=\"Certificate verification failed.\"/>"));
+
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                using var handler = new DelegateHttpHandler((req, _) =>
+                {
+                    if (string.Equals(req.RequestUri!.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "<root status_code=\"401\" query=\"\" status_message=\"The client is not authorized. Certificate verification failed.\"/>",
+                                Encoding.UTF8,
+                                "application/xml"),
+                        });
+                    }
+
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            "<root status_code=\"200\"><hostname>REAL-HOST</hostname><appversion>7.1.431.-1</appversion><PairStatus>0</PairStatus><ServerCodecModeSupport>1835777</ServerCodecModeSupport></root>",
+                            Encoding.UTF8,
+                            "application/xml"),
+                    });
+                });
+
+                var client = new GameStreamClient(id, handler);
+                var info = client.GetServerInfoAsync("10.126.126.4").GetAwaiter().GetResult();
+                Equal("REAL-HOST", info.HostName);
+                Equal(1835777, info.ServerCodecModeSupport);
+                Equal(0, info.PairStatus);
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
+            }
+        }),
+
+        ("SunshineManager does not misclassify post-reachability TaskCanceledException as IsUnreachable", () =>
+        {
+            const string targetId = "dddddddddddddddddddddddddddddddd";
+            using var client = new HttpClient(new DelegateHttpHandler((req, _) =>
+            {
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent($$"""{"pairings":[{"id":"{{targetId}}","name":"roth","address":"10.126.126.2"}]}""", Encoding.UTF8, "application/json"),
+                    });
+                }
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/csrf-token")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"csrf_token":"tok-1"}""", Encoding.UTF8, "application/json"),
+                    });
+                }
+                if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    throw new TaskCanceledException("Simulated handshake timeout while /api/pin was blocked");
+                }
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            }));
+
+            var res = SunshineManager.SubmitPairingPinDetailedAsync(
+                "1234", "Client-A", "remotedesk", "pass", new Uri("https://127.0.0.1:47990"), client).GetAwaiter().GetResult();
+            Equal(false, res.Success);
+            Equal(false, res.IsUnreachable);
+            Equal(false, res.IsUnauthorized);
+        }),
+
+        ("AutoPairOrchestrator fails fast with upgrade guidance when legacy peer without AgentVersion returns HTTP 400", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "autopair-legacy400-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                using var gsHandler = new DelegateHttpHandler(async (req, ct) =>
+                {
+                    if (req.RequestUri!.AbsolutePath == "/serverinfo")
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "<root status_code=\"200\"><hostname>LEGACY-HOST</hostname><appversion>7.1.431.-1</appversion><PairStatus>0</PairStatus></root>",
+                                Encoding.UTF8,
+                                "application/xml"),
+                        };
+                    }
+                    if (req.RequestUri!.AbsolutePath == "/pair")
+                        await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                });
+
+                var pairCallCount = 0;
+                using var peerHandler = new DelegateHttpHandler((req, _) =>
+                {
+                    if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/agent/v1/info")
+                    {
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                """{"deviceKey":"dev-legacy","hostname":"LEGACY-HOST","sunshineReady":true,"sunshinePort":47989,"securityPinRequired":false}""",
+                                Encoding.UTF8,
+                                "application/json"),
+                        });
+                    }
+                    if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/agent/v1/pair")
+                    {
+                        pairCallCount++;
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)
+                        {
+                            Content = new StringContent(
+                                """{"ok":false,"error":"SUNSHINE_PAIR_FAILED","message":"Sunshine 配对接口拒绝请求（HTTP 400）。"}""",
+                                Encoding.UTF8,
+                                "application/json"),
+                        });
+                    }
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                });
+
+                using var peerClient = new AgentPeerClient(peerHandler);
+                var orchestrator = new AutoPairOrchestrator(peerClient);
+                var gsClient = new GameStreamClient(id, gsHandler);
+
+                string? observedErr = null;
+                try
+                {
+                    _ = orchestrator.NativeAutoPairAsync(gsClient, "10.126.126.4", 47999, "legacy-auth-key-0123456789abcdef", "Client-Y", null).GetAwaiter().GetResult();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    observedErr = ex.Message;
+                }
+
+                Equal(1, pairCallCount);
+                Equal(true, observedErr?.Contains("版本过旧", StringComparison.Ordinal) == true);
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
+            }
+        }),
+
+        ("GameStreamClient.CreateDefaultHttpsHandler disables TLS resumption and attaches client certificate", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "gs-tls-handler-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                using var handler = GameStreamClient.CreateDefaultHttpsHandler(id.ClientCertificate);
+                Equal(false, handler.UseProxy);
+                Equal(false, handler.SslOptions.AllowTlsResume);
+                Equal(1, handler.SslOptions.ClientCertificates?.Count ?? 0);
+                Equal(true, ReferenceEquals(id.ClientCertificate, handler.SslOptions.ClientCertificates![0]));
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
             }
         }),
     ];

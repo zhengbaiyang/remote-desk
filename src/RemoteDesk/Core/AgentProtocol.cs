@@ -131,7 +131,8 @@ internal sealed record AgentPeerInfoDto(
     string Hostname,
     bool SunshineReady,
     int SunshinePort,
-    bool SecurityPinRequired);
+    bool SecurityPinRequired,
+    string? AgentVersion = null);
 
 internal sealed record AgentPairRequestDto(
     string Pin,

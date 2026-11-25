@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -556,7 +557,8 @@ internal static class SunshineManager
         var targetBase = baseUri ?? new Uri($"https://127.0.0.1:{DefaultControlPort}");
 
         var ownsClient = httpClient is null;
-        var client = httpClient ?? CreateLocalApiClient();
+        var client = httpClient ?? CreateLocalApiClient(TimeSpan.FromSeconds(20));
+        var localApiConfirmedReachable = false;
         try
         {
             var pendingQuery = await GetPendingPairingsAsync(username, password, targetBase, client, ct).ConfigureAwait(false);
@@ -578,6 +580,8 @@ internal static class SunshineManager
                     "无法连接本地 Sunshine API。");
             }
 
+            localApiConfirmedReachable = true;
+
             if (pendingQuery.Supported)
             {
                 var pairings = pendingQuery.Pairings;
@@ -596,6 +600,7 @@ internal static class SunshineManager
                         {
                             return new SunshinePinSubmitResult(false, false, true, "无法连接本地 Sunshine API。");
                         }
+                        localApiConfirmedReachable = true;
                         if (!pendingQuery.Supported || pendingQuery.Pairings.Count > 0)
                         {
                             pairings = pendingQuery.Pairings;
@@ -655,6 +660,15 @@ internal static class SunshineManager
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
+            if (ex is TaskCanceledException && localApiConfirmedReachable)
+            {
+                return new SunshinePinSubmitResult(
+                    false,
+                    IsUnauthorized: false,
+                    IsUnreachable: false,
+                    "等待客户端完成 Sunshine 配对握手超时，请重试。");
+            }
+
             return new SunshinePinSubmitResult(false, false, IsUnreachable: true, $"无法连接本地 Sunshine API：{ex.Message}");
         }
         finally
@@ -780,14 +794,16 @@ internal static class SunshineManager
 
     private static HttpClient CreateLocalApiClient(TimeSpan? timeout = null)
     {
-        var handler = new HttpClientHandler
+        var handler = new SocketsHttpHandler
         {
             UseProxy = false,
-            ServerCertificateCustomValidationCallback = (req, _, _, _) =>
+            SslOptions = new SslClientAuthenticationOptions
             {
-                var host = req.RequestUri?.Host;
-                return string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
+                AllowTlsResume = false,
+                RemoteCertificateValidationCallback = (sender, _, _, _) =>
+                    sender is SslStream ssl &&
+                    (string.Equals(ssl.TargetHostName, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(ssl.TargetHostName, "localhost", StringComparison.OrdinalIgnoreCase)),
             },
         };
         return new HttpClient(handler, disposeHandler: true)
