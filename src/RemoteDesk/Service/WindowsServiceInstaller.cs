@@ -484,8 +484,8 @@ internal static class WindowsServiceInstaller
     {
         RemoveFirewallRules();
         TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Agent 47999\" dir=in action=allow protocol=TCP localport={AgentIpcConstants.DefaultAgentPort}");
-        TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream\" dir=in action=allow protocol=TCP localport=47984,47989,47990");
-        TryRunNetsh($"advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream UDP\" dir=in action=allow protocol=UDP localport=47998-48010");
+        TryRunNetsh("advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream\" dir=in action=allow protocol=TCP localport=47984,47989,48010");
+        TryRunNetsh("advfirewall firewall add rule name=\"RemoteDesk Sunshine Stream UDP\" dir=in action=allow protocol=UDP localport=47998-48010");
     }
 
     private static void RemoveFirewallRules()

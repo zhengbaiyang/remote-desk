@@ -541,8 +541,16 @@ public partial class MainWindow
             if (installedAny)
             {
                 RefreshAllEngines();
-                RefreshHostStatus();
                 await PushConfigToDaemonOrApplyLocallyAsync(autoStartMesh: true);
+                if (settings.HostModeEnabled &&
+                    OperatingSystem.IsWindows() &&
+                    !WindowsServiceInstaller.GetServiceStatus().Running &&
+                    localHostPeerHost is not null &&
+                    ResolveSunshineExecutable() is { } ssExe)
+                {
+                    await localHostPeerHost.EnsureProvisionedAndStartedAsync(ssExe);
+                }
+                RefreshHostStatus();
                 await RefreshEasyTierStatusAsync();
                 ShowStatus("所需核心引擎已在后台自动就绪。");
             }
@@ -951,6 +959,11 @@ public partial class MainWindow
                         var updatedPaired = pairedIds.Append(synced.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                         SaveSettings(settings with { PairedDeviceIds = updatedPaired });
                     }
+                }
+                catch (Exception error) when (error is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException or InvalidDataException or IOException)
+                {
+                    ShowStatus($"自动配对失败：{error.Message}", warning: true);
+                    return;
                 }
                 finally
                 {

@@ -14,6 +14,7 @@ internal static class AgentIpcConstants
     public const string ServiceDisplayName = "RemoteDesk 后台守护服务";
     public const string ServiceDescription = "自动维护 EasyTier 虚拟网卡与 Sunshine 高刷被控端，支持无 UAC 与锁屏无人值守远控。";
     public const int DefaultAgentPort = 47999;
+    public const string ErrorSunshineReprovisionedRetry = "SUNSHINE_REPROVISIONED_RETRY";
 
     public static string GetProgramDataDirectory() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RemoteDesk");
@@ -120,6 +121,10 @@ internal sealed record AgentApplyConfigPayload(
 internal sealed record AgentSetSecurityPinPayload(
     bool Required,
     string? NewPin);
+
+internal sealed record AgentSubmitLocalPinPayload(
+    string Pin,
+    string ClientName);
 
 internal sealed record AgentPeerInfoDto(
     string DeviceKey,

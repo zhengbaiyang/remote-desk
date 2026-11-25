@@ -38,7 +38,7 @@ internal sealed class AgentPeerServer : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly Func<AgentPeerServerState> _getState;
-    private readonly Func<string, string, CancellationToken, Task<(bool Success, string Message)>> _submitPinCallback;
+    private readonly Func<string, string, string?, CancellationToken, Task<(bool Success, string Message, string? ErrorCode)>> _submitPinCallback;
     private readonly AgentPeerFeatureHandlers _featureHandlers;
     private readonly AgentHmacAuth _hmacAuth = new();
 
@@ -50,9 +50,25 @@ internal sealed class AgentPeerServer : IDisposable
         Func<AgentPeerServerState> getState,
         Func<string, string, CancellationToken, Task<(bool Success, string Message)>> submitPinCallback,
         AgentPeerFeatureHandlers? featureHandlers = null)
+        : this(
+            getState,
+            async (pin, clientName, _, ct) =>
+            {
+                var (ok, msg) = await submitPinCallback(pin, clientName, ct).ConfigureAwait(false);
+                return (ok, msg, ok ? null : "SUNSHINE_PAIR_FAILED");
+            },
+            featureHandlers)
+    {
+        ArgumentNullException.ThrowIfNull(submitPinCallback);
+    }
+
+    public AgentPeerServer(
+        Func<AgentPeerServerState> getState,
+        Func<string, string, string?, CancellationToken, Task<(bool Success, string Message, string? ErrorCode)>> submitPinCallbackWithIp,
+        AgentPeerFeatureHandlers? featureHandlers = null)
     {
         _getState = getState ?? throw new ArgumentNullException(nameof(getState));
-        _submitPinCallback = submitPinCallback ?? throw new ArgumentNullException(nameof(submitPinCallback));
+        _submitPinCallback = submitPinCallbackWithIp ?? throw new ArgumentNullException(nameof(submitPinCallbackWithIp));
         _featureHandlers = featureHandlers ?? new AgentPeerFeatureHandlers();
     }
 
@@ -108,6 +124,7 @@ internal sealed class AgentPeerServer : IDisposable
             try
             {
                 client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                var remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address?.ToString();
                 _ = Task.Run(async () =>
                 {
                     using (client)
@@ -115,7 +132,7 @@ internal sealed class AgentPeerServer : IDisposable
                         client.ReceiveTimeout = (int)UploadTimeout.TotalMilliseconds;
                         client.SendTimeout = (int)UploadTimeout.TotalMilliseconds;
                         await using var stream = client.GetStream();
-                        await HandleConnectionStreamAsync(stream, ct).ConfigureAwait(false);
+                        await HandleConnectionStreamAsync(stream, ct, remoteIp).ConfigureAwait(false);
                     }
                 }, ct);
             }
@@ -138,7 +155,7 @@ internal sealed class AgentPeerServer : IDisposable
         }
     }
 
-    internal async Task HandleConnectionStreamAsync(Stream stream, CancellationToken ct)
+    internal async Task HandleConnectionStreamAsync(Stream stream, CancellationToken ct, string? remoteIp = null)
     {
         using var headerTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         headerTimeoutCts.CancelAfter(IoTimeout);
@@ -268,11 +285,11 @@ internal sealed class AgentPeerServer : IDisposable
                 }
             }
 
-            var (ok, msg) = await _submitPinCallback(pairReq.Pin.Trim(), pairReq.ClientName, effectiveCt).ConfigureAwait(false);
+            var (ok, msg, errCode) = await _submitPinCallback(pairReq.Pin.Trim(), pairReq.ClientName, remoteIp, effectiveCt).ConfigureAwait(false);
             if (ok)
                 await WriteJsonResponseAsync(stream, 200, "OK", new AgentPairResponseDto(true, null, msg), effectiveCt).ConfigureAwait(false);
             else
-                await WriteJsonResponseAsync(stream, 502, "Bad Gateway", new AgentPairResponseDto(false, "SUNSHINE_PAIR_FAILED", msg), effectiveCt).ConfigureAwait(false);
+                await WriteJsonResponseAsync(stream, 502, "Bad Gateway", new AgentPairResponseDto(false, errCode ?? "SUNSHINE_PAIR_FAILED", msg), effectiveCt).ConfigureAwait(false);
             return;
         }
 

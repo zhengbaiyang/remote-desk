@@ -292,6 +292,13 @@ public partial class MainWindow
             card.EndInstall();
             ClearManualOverrideIfEmptyOrMissing(kind);
             RefreshAllEngines();
+            if (kind == EngineKind.Sunshine)
+            {
+                if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                    await PushConfigToDaemonIfRunningAsync();
+                else if (settings.HostModeEnabled && localHostPeerHost is not null && ResolveSunshineExecutable() is { } ssExe)
+                    await localHostPeerHost.EnsureProvisionedAndStartedAsync(ssExe);
+            }
             RefreshHostStatus();
             if (kind == EngineKind.EasyTier)
                 await RefreshEasyTierStatusAsync();
@@ -332,6 +339,13 @@ public partial class MainWindow
             card.EndInstall();
             ClearManualOverrideIfEmptyOrMissing(kind);
             RefreshAllEngines();
+            if (kind == EngineKind.Sunshine)
+            {
+                if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+                    await PushConfigToDaemonIfRunningAsync();
+                else if (settings.HostModeEnabled && localHostPeerHost is not null && ResolveSunshineExecutable() is { } ssExe)
+                    await localHostPeerHost.EnsureProvisionedAndStartedAsync(ssExe);
+            }
             RefreshHostStatus();
             if (kind == EngineKind.EasyTier)
                 await RefreshEasyTierStatusAsync();

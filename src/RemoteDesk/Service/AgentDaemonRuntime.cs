@@ -33,6 +33,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
     private string? _lastAppliedEasyTierFingerprint;
     private DateTimeOffset _lastSunshineStartUtc = DateTimeOffset.MinValue;
     private int _sunshineConsecutiveRestarts;
+    private volatile bool _sunshineCredsVerified;
     private long? _lastCheckinUtc;
     private string? _lastError;
 
@@ -53,6 +54,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
         await ReconcileManagedProcessesAsync(forceRestartEasyTier: false, _cts.Token).ConfigureAwait(false);
         StartPeerServer();
 
+        _ = Task.Run(() => EnsureSunshineCredentialsVerifiedAsync(_cts.Token), _cts.Token);
         _pipeLoopTask = Task.Run(() => RunPipeServerLoopAsync(_cts.Token), _cts.Token);
         _checkinLoopTask = Task.Run(() => RunHeartbeatLoopAsync(_cts.Token), _cts.Token);
     }
@@ -147,13 +149,17 @@ internal sealed class AgentDaemonRuntime : IDisposable
             SecurityPinHash: cfg.SecurityPinHash);
     }
 
-    private async Task<(bool Success, string Message)> HandleRemotePairPinAsync(string pin, string clientName, CancellationToken ct)
+    private async Task<(bool Success, string Message, string? ErrorCode)> HandleRemotePairPinAsync(
+        string pin,
+        string clientName,
+        string? remoteIp,
+        CancellationToken ct)
     {
         var cfg = _config;
         if (!cfg.HostModeEnabled)
-            return (false, "目标电脑未开启「允许本机被控」。");
+            return (false, "目标电脑未开启「允许本机被控」。", "HOST_MODE_DISABLED");
 
-        return await SunshineManager.SubmitPinWithSelfHealAsync(
+        var result = await SunshineManager.SubmitPinWithSelfHealDetailedAsync(
             pin,
             clientName,
             getCredentials: () =>
@@ -176,7 +182,22 @@ internal sealed class AgentDaemonRuntime : IDisposable
             },
             baseUri: null,
             httpClient: null,
-            ct: ct).ConfigureAwait(false);
+            ct: ct,
+            remoteClientIp: remoteIp).ConfigureAwait(false);
+
+        if (result.Success)
+        {
+            _sunshineCredsVerified = true;
+            return (true, result.Message, null);
+        }
+
+        if (result.SunshineRestarted)
+        {
+            _sunshineCredsVerified = true;
+            return (false, result.Message, AgentIpcConstants.ErrorSunshineReprovisionedRetry);
+        }
+
+        return (false, result.Message, "SUNSHINE_PAIR_FAILED");
     }
 
     private async Task RunPipeServerLoopAsync(CancellationToken ct)
@@ -337,6 +358,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                     SaveConfigToDisk(_config);
                     _sunshineConsecutiveRestarts = 0;
                     _lastSunshineStartUtc = DateTimeOffset.MinValue;
+                    _sunshineCredsVerified = false;
                     EnsureSunshineRunning();
                 }
                 finally
@@ -344,6 +366,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                     _configLock.Release();
                 }
 
+                _ = EnsureSunshineCredentialsVerifiedAsync(ct);
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
                 return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
             }
@@ -357,6 +380,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
                     HostServiceManager.TryStopSunshineService();
                     HostServiceManager.StopSunshineHost();
                     _sunshineConsecutiveRestarts = 0;
+                    _sunshineCredsVerified = false;
                 }
                 finally
                 {
@@ -365,6 +389,28 @@ internal sealed class AgentDaemonRuntime : IDisposable
 
                 var status = await QueryRuntimeStatusAsync(ct).ConfigureAwait(false);
                 return new AgentIpcResponse(true, JsonSerializer.Serialize(status, IpcJsonOptions));
+            }
+            case "submit_local_pin":
+            {
+                AgentSubmitLocalPinPayload? pinReq;
+                try
+                {
+                    pinReq = string.IsNullOrWhiteSpace(req.PayloadJson)
+                        ? null
+                        : JsonSerializer.Deserialize<AgentSubmitLocalPinPayload>(req.PayloadJson, IpcJsonOptions);
+                }
+                catch (JsonException)
+                {
+                    return new AgentIpcResponse(false, null, "配对请求 JSON 无效。");
+                }
+
+                if (pinReq is null)
+                    return new AgentIpcResponse(false, null, "缺少 PIN 配对参数。");
+
+                var (ok, msg, _) = await HandleRemotePairPinAsync(pinReq.Pin, pinReq.ClientName, remoteIp: null, ct).ConfigureAwait(false);
+                return ok
+                    ? new AgentIpcResponse(true, msg)
+                    : new AgentIpcResponse(false, null, msg);
             }
             case "set_security_pin":
             {
@@ -507,6 +553,12 @@ internal sealed class AgentDaemonRuntime : IDisposable
                 ProtectedSyncSessionToken = protectedToken,
             };
 
+            if (!string.Equals(_config.SunshineExecutablePath, updated.SunshineExecutablePath, StringComparison.OrdinalIgnoreCase) ||
+                (!_config.HostModeEnabled && updated.HostModeEnabled))
+            {
+                _sunshineCredsVerified = false;
+            }
+
             _config = updated;
             SaveConfigToDisk(updated);
             await ReconcileManagedProcessesAsync(forceRestartEasyTier: false, ct).ConfigureAwait(false);
@@ -590,7 +642,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
         try
         {
             var configPath = SunshineManager.ResolveConfigPath(sunshineExe);
-            SunshineManager.EnsureSafeLocalConfig(configPath);
+            SunshineManager.EnsureSafeLocalConfig(configPath, SunshineManager.IsManagedSunshinePath(sunshineExe));
 
             string? existingPass = null;
             var hasCreds = !string.IsNullOrEmpty(_config.SunshineAdminUser) &&
@@ -679,6 +731,75 @@ internal sealed class AgentDaemonRuntime : IDisposable
         }
     }
 
+    private async Task EnsureSunshineCredentialsVerifiedAsync(CancellationToken ct)
+    {
+        var cfg = _config;
+        if (!cfg.HostModeEnabled || _sunshineCredsVerified)
+            return;
+
+        var sunshineExe = ResolveSunshineExe(cfg);
+        if (string.IsNullOrEmpty(sunshineExe))
+            return;
+
+        try
+        {
+            string? pass = null;
+            var hasCreds = !string.IsNullOrWhiteSpace(cfg.SunshineAdminUser) &&
+                           SecretProtector.TryUnprotect(cfg.ProtectedSunshineAdminPassword, out pass) &&
+                           !string.IsNullOrEmpty(pass);
+
+            if (!hasCreds)
+            {
+                var prov = await ProvisionSunshineAndStartAsync(forceReprovision: true, ct).ConfigureAwait(false);
+                if (!prov.Ok)
+                    return;
+
+                pass = prov.Password;
+                cfg = _config;
+            }
+
+            var user = string.IsNullOrWhiteSpace(cfg.SunshineAdminUser)
+                ? SunshineManager.DefaultAdminUser
+                : cfg.SunshineAdminUser;
+
+            var probe = await SunshineManager.VerifyLocalCredentialsAsync(user, pass!, ct: ct).ConfigureAwait(false);
+            if (!probe.Reachable)
+                return;
+
+            if (probe.Authorized)
+            {
+                _sunshineCredsVerified = true;
+                Log("Verified Sunshine local Web API credentials.");
+                return;
+            }
+
+            Log("Detected stale Sunshine Web API credentials; reprovisioning...");
+            var healed = await ProvisionSunshineAndStartAsync(forceReprovision: true, ct).ConfigureAwait(false);
+            if (!healed.Ok)
+                return;
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(12);
+            while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+            {
+                var retryProbe = await SunshineManager.VerifyLocalCredentialsAsync(healed.Username, healed.Password, ct: ct).ConfigureAwait(false);
+                if (retryProbe.Reachable && retryProbe.Authorized)
+                {
+                    _sunshineCredsVerified = true;
+                    Log("Re-provisioned and verified Sunshine local Web API credentials.");
+                    return;
+                }
+                await Task.Delay(350, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log($"EnsureSunshineCredentialsVerifiedAsync warning: {ex.Message}");
+        }
+    }
+
     private async Task<AgentRuntimeStatus> QueryRuntimeStatusAsync(CancellationToken ct)
     {
         var cfg = _config;
@@ -716,6 +837,8 @@ internal sealed class AgentDaemonRuntime : IDisposable
             {
                 await TrySendCheckinAsync(ct).ConfigureAwait(false);
                 await ReconcileManagedProcessesAsync(forceRestartEasyTier: false, ct).ConfigureAwait(false);
+                if (_config.HostModeEnabled && !_sunshineCredsVerified)
+                    await EnsureSunshineCredentialsVerifiedAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

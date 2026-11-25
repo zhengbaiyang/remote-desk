@@ -653,8 +653,34 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (IsAccountLoggedIn() &&
+                !string.IsNullOrEmpty(settings.Account?.MeshConfig?.AgentAuthKey) &&
+                SecretProtector.TryUnprotect(settings.Account.MeshConfig.AgentAuthKey, out var authKey) &&
+                !string.IsNullOrEmpty(authKey))
+            {
+                ShowStatus($"正在尝试对 {item.HostAddress} 执行同账号静默自动配对…");
+                var localHostName = HostServiceManager.GetLocalNetworkInfo().HostName;
+                var autoRes = await autoPairOrchestrator.NativeAutoPairAsync(
+                    gsClient,
+                    item.HostAddress,
+                    AgentIpcConstants.DefaultAgentPort,
+                    authKey,
+                    localHostName,
+                    securityPin: null);
+                if (autoRes.IsSuccess)
+                {
+                    ShowStatus($"已自动完成对「{item.Name}」的零 PIN 安全配对，可直接点击「发起高刷连接」。");
+                    return;
+                }
+                if (autoRes.Status is AutoPairStatus.NeedSecurityPin or AutoPairStatus.InvalidSecurityPin)
+                {
+                    ShowStatus(autoRes.Message, warning: true);
+                    return;
+                }
+            }
+
             var pin = RandomNumberGenerator.GetInt32(0, 10000).ToString("D4", CultureInfo.InvariantCulture);
-            ShowStatus($"正在向 {item.HostAddress} 发起原生配对，请在目标电脑 Sunshine 控制台 (:47990) 输入 PIN 码：{pin}");
+            ShowStatus($"正在向 {item.HostAddress} 发起原生配对，请在目标电脑 RemoteDesk「本机被控」页输入 PIN 码：{pin}（无需打开 Sunshine 控制面板）");
             var (ok, message) = await gsClient.PairWithPinAsync(item.HostAddress, pin);
             ShowStatus(ok ? $"配对成功：{item.HostAddress}，可直接发起高刷连接。" : $"配对失败：{message}", warning: !ok);
         }

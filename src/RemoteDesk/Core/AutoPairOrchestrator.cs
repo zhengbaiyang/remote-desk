@@ -83,47 +83,86 @@ internal sealed class AutoPairOrchestrator
             // Continue into pairing flow.
         }
 
-        var pin = RandomNumberGenerator.GetInt32(0, 10000).ToString("D4");
-        AutoPairResult? pinAuthFailure = null;
+        for (var round = 0; round < 2; round++)
+        {
+            var pin = RandomNumberGenerator.GetInt32(0, 10000).ToString("D4");
+            AutoPairResult? pinAuthFailure = null;
+            var shouldRetryHandshake = false;
+            string? lastErrorMessage = null;
 
-        var (paired, message) = await gsClient.PairWithPinAsync(
-            targetHost,
-            pin,
-            onPinReadyAsync: async token =>
+            bool paired;
+            string message;
+            try
             {
-                for (var attempt = 0; attempt < 6; attempt++)
-                {
-                    var resp = await _peerClient
-                        .SubmitPairPinAsync(targetHost, agentPort, agentAuthKey, pin, clientName, securityPin, token)
-                        .ConfigureAwait(false);
-
-                    if (resp.Ok)
-                        return;
-
-                    if (string.Equals(resp.Error, "SECURITY_PIN_REQUIRED", StringComparison.Ordinal))
+                (paired, message) = await gsClient.PairWithPinAsync(
+                    targetHost,
+                    pin,
+                    onPinReadyAsync: async token =>
                     {
-                        pinAuthFailure = new AutoPairResult(AutoPairStatus.NeedSecurityPin, resp.Message ?? "需要输入独立安全密码。");
-                        throw new OperationCanceledException(pinAuthFailure.Message);
-                    }
+                        for (var attempt = 0; attempt < 6; attempt++)
+                        {
+                            var resp = await _peerClient
+                                .SubmitPairPinAsync(targetHost, agentPort, agentAuthKey, pin, clientName, securityPin, token)
+                                .ConfigureAwait(false);
 
-                    if (string.Equals(resp.Error, "INVALID_SECURITY_PIN", StringComparison.Ordinal))
-                    {
-                        pinAuthFailure = new AutoPairResult(AutoPairStatus.InvalidSecurityPin, resp.Message ?? "独立安全密码错误。");
-                        throw new OperationCanceledException(pinAuthFailure.Message);
-                    }
+                            if (resp.Ok)
+                                return;
 
-                    await Task.Delay(450, token).ConfigureAwait(false);
-                }
+                            lastErrorMessage = resp.Message;
 
-                throw new InvalidOperationException("向目标节点自动提交 PIN 超时，请稍后重试。");
-            },
-            ct).ConfigureAwait(false);
+                            if (string.Equals(resp.Error, "SECURITY_PIN_REQUIRED", StringComparison.Ordinal))
+                            {
+                                pinAuthFailure = new AutoPairResult(AutoPairStatus.NeedSecurityPin, resp.Message ?? "需要输入独立安全密码。");
+                                throw new OperationCanceledException(pinAuthFailure.Message);
+                            }
 
-        if (pinAuthFailure is not null)
-            return pinAuthFailure;
+                            if (string.Equals(resp.Error, "INVALID_SECURITY_PIN", StringComparison.Ordinal))
+                            {
+                                pinAuthFailure = new AutoPairResult(AutoPairStatus.InvalidSecurityPin, resp.Message ?? "独立安全密码错误。");
+                                throw new OperationCanceledException(pinAuthFailure.Message);
+                            }
 
-        return paired
-            ? new AutoPairResult(AutoPairStatus.Succeeded, message)
-            : new AutoPairResult(AutoPairStatus.Failed, message);
+                            if (string.Equals(resp.Error, AgentIpcConstants.ErrorSunshineReprovisionedRetry, StringComparison.Ordinal))
+                            {
+                                shouldRetryHandshake = true;
+                                throw new OperationCanceledException(resp.Message ?? "Sunshine 已自动修复并重启，正在重新发起配对。");
+                            }
+
+                            if (string.Equals(resp.Error, "HOST_MODE_DISABLED", StringComparison.Ordinal) ||
+                                (!string.IsNullOrEmpty(resp.Message) && resp.Message.Contains("未开启「允许本机被控」", StringComparison.Ordinal)))
+                            {
+                                throw new InvalidOperationException(resp.Message ?? "目标电脑未开启「允许本机被控」。");
+                            }
+
+                            await Task.Delay(450, token).ConfigureAwait(false);
+                        }
+
+                        throw new InvalidOperationException(lastErrorMessage ?? "向目标节点自动提交 PIN 超时，请稍后重试。");
+                    },
+                    ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (pinAuthFailure is not null && !ct.IsCancellationRequested)
+            {
+                return pinAuthFailure;
+            }
+            catch (OperationCanceledException) when (shouldRetryHandshake && round == 0 && !ct.IsCancellationRequested)
+            {
+                await Task.Delay(300, ct).ConfigureAwait(false);
+                continue;
+            }
+            catch (OperationCanceledException) when (shouldRetryHandshake && !ct.IsCancellationRequested)
+            {
+                return new AutoPairResult(AutoPairStatus.Failed, lastErrorMessage ?? "Sunshine 重启后自动配对重试失败，请再试一次。");
+            }
+
+            if (pinAuthFailure is not null)
+                return pinAuthFailure;
+
+            return paired
+                ? new AutoPairResult(AutoPairStatus.Succeeded, message)
+                : new AutoPairResult(AutoPairStatus.Failed, message);
+        }
+
+        return new AutoPairResult(AutoPairStatus.Failed, "自动配对未能完成，请稍后重试。");
     }
 }

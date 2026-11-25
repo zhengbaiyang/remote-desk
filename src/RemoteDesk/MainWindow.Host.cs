@@ -46,8 +46,21 @@ public partial class MainWindow
                 if (sunshineExe is not null)
                 {
                     if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
-                        await AgentIpcClient.StartSunshineAsync();
-                    ShowStatus("已开启本机被控模式，已由后台托管 Sunshine（支持同账号自动静默配对）。");
+                    {
+                        var (ok, _, err) = await AgentIpcClient.StartSunshineAsync();
+                        ShowStatus(ok
+                            ? "已开启本机被控模式，已由后台托管 Sunshine（支持同账号自动静默配对）。"
+                            : (err ?? "守护服务启动 Sunshine 失败。"), warning: !ok);
+                    }
+                    else if (localHostPeerHost is not null)
+                    {
+                        var (ok, msg) = await localHostPeerHost.EnsureProvisionedAndStartedAsync(sunshineExe);
+                        ShowStatus(msg, warning: !ok);
+                    }
+                    else
+                    {
+                        ShowStatus("已开启本机被控模式。");
+                    }
                 }
                 else
                 {
@@ -266,6 +279,14 @@ public partial class MainWindow
                 return;
             }
 
+            if (localHostPeerHost is not null)
+            {
+                var (ok, msg) = await localHostPeerHost.EnsureProvisionedAndStartedAsync(sunshineExe);
+                RefreshHostStatus();
+                ShowStatus(msg, warning: !ok);
+                return;
+            }
+
             var started = HostServiceManager.StartSunshineHost(sunshineExe);
             RefreshHostStatus();
             ShowStatus(started
@@ -346,6 +367,57 @@ public partial class MainWindow
         finally
         {
             CopySunshineCredsButton.IsEnabled = true;
+        }
+    }
+
+    private async void SubmitHostQuickPinClicked(object sender, RoutedEventArgs e)
+    {
+        var pin = HostQuickPinInput.Text.Trim();
+        if (pin.Length != 4 || !pin.All(char.IsAsciiDigit))
+        {
+            ShowStatus("请输入控制端显示的 4 位数字配对 PIN 码。", warning: true);
+            HostQuickPinInput.Focus();
+            return;
+        }
+
+        var sunshineExe = ResolveSunshineExecutable();
+        if (sunshineExe is null)
+        {
+            ShowStatus("未检测到 Sunshine 安装程序，请先在「引擎与设置」安装。", warning: true);
+            return;
+        }
+
+        SubmitHostQuickPinButton.IsEnabled = false;
+        try
+        {
+            (bool ok, string msg) result;
+            if (OperatingSystem.IsWindows() && WindowsServiceInstaller.GetServiceStatus().Running)
+            {
+                result = await AgentIpcClient.SubmitLocalPinAsync(pin, "LAN-Client");
+            }
+            else if (localHostPeerHost is not null)
+            {
+                result = await localHostPeerHost.SubmitLocalPinAsync(pin, "LAN-Client");
+            }
+            else
+            {
+                result = (false, "本地托管组件未就绪，请先开启被控服务。");
+            }
+
+            if (result.ok)
+            {
+                HostQuickPinInput.Text = "";
+                RefreshHostStatus();
+                ShowStatus(result.msg);
+            }
+            else
+            {
+                ShowStatus(result.msg, warning: true);
+            }
+        }
+        finally
+        {
+            SubmitHostQuickPinButton.IsEnabled = true;
         }
     }
 

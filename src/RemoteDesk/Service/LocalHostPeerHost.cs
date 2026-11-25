@@ -87,6 +87,64 @@ internal sealed class LocalHostPeerHost : IDisposable
         _provisionLock.Dispose();
     }
 
+    public async Task<(bool Ok, string Message)> EnsureProvisionedAndStartedAsync(
+        string? sunshineExeOverride = null,
+        CancellationToken ct = default)
+    {
+        await _provisionLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var exe = sunshineExeOverride ?? _sunshineExe ?? HostServiceManager.FindSunshineExecutable(null, null);
+            if (string.IsNullOrEmpty(exe))
+                return (false, "未检测到 Sunshine 安装程序。");
+
+            var res = ProvisionAndStartInternal(exe, forceReprovision: false);
+            if (!res.Ok)
+                return (false, res.Error ?? "本地 Sunshine 托管初始化失败。");
+
+            var probe = await SunshineManager.VerifyLocalCredentialsAsync(res.Username, res.Password, ct: ct).ConfigureAwait(false);
+            if (probe.Reachable && !probe.Authorized)
+            {
+                res = ProvisionAndStartInternal(exe, forceReprovision: true);
+                if (!res.Ok)
+                    return (false, res.Error ?? "本地 Sunshine 凭据同步失败。");
+            }
+
+            return (true, "已自动配置凭据并启动 Sunshine 被控端（支持软件内免面板配对）。");
+        }
+        finally
+        {
+            _provisionLock.Release();
+        }
+    }
+
+    public async Task<(bool Success, string Message)> SubmitLocalPinAsync(
+        string pin,
+        string clientName,
+        CancellationToken ct = default)
+    {
+        var result = await SunshineManager.SubmitPinWithSelfHealDetailedAsync(
+            pin,
+            clientName,
+            getCredentials: () =>
+            {
+                var creds = LoadStoredCreds();
+                return creds is not null ? (creds.Value.Username, creds.Value.Password) : null;
+            },
+            reprovisionAndStartAsync: ct2 => ProvisionAndStartAsync(forceReprovision: true, ct2),
+            wakeHostAsync: async () =>
+            {
+                var res = await ProvisionAndStartAsync(forceReprovision: false, ct).ConfigureAwait(false);
+                return res.Ok;
+            },
+            baseUri: null,
+            httpClient: null,
+            ct: ct,
+            remoteClientIp: null).ConfigureAwait(false);
+
+        return (result.Success, result.Message);
+    }
+
     public AgentSunshineCredsDto? TryGetOrProvisionManagedCredentials(string? sunshineExeOverride = null)
     {
         var stored = LoadStoredCreds();
@@ -126,12 +184,16 @@ internal sealed class LocalHostPeerHost : IDisposable
             SecurityPinHash: _securityPinHash);
     }
 
-    private async Task<(bool Success, string Message)> HandlePairPinAsync(string pin, string clientName, CancellationToken ct)
+    private async Task<(bool Success, string Message, string? ErrorCode)> HandlePairPinAsync(
+        string pin,
+        string clientName,
+        string? remoteIp,
+        CancellationToken ct)
     {
         if (!_hostModeEnabled)
-            return (false, "目标电脑未开启「允许本机被控」。");
+            return (false, "目标电脑未开启「允许本机被控」。", "HOST_MODE_DISABLED");
 
-        return await SunshineManager.SubmitPinWithSelfHealAsync(
+        var result = await SunshineManager.SubmitPinWithSelfHealDetailedAsync(
             pin,
             clientName,
             getCredentials: () =>
@@ -147,7 +209,16 @@ internal sealed class LocalHostPeerHost : IDisposable
             },
             baseUri: null,
             httpClient: null,
-            ct: ct).ConfigureAwait(false);
+            ct: ct,
+            remoteClientIp: remoteIp).ConfigureAwait(false);
+
+        if (result.Success)
+            return (true, result.Message, null);
+
+        if (result.SunshineRestarted)
+            return (false, result.Message, AgentIpcConstants.ErrorSunshineReprovisionedRetry);
+
+        return (false, result.Message, "SUNSHINE_PAIR_FAILED");
     }
 
     private async Task<(bool Ok, string Username, string Password, string? Error)> ProvisionAndStartAsync(
@@ -175,6 +246,9 @@ internal sealed class LocalHostPeerHost : IDisposable
     {
         try
         {
+            var configPath = SunshineManager.ResolveConfigPath(sunshineExe);
+            SunshineManager.EnsureSafeLocalConfig(configPath, SunshineManager.IsManagedSunshinePath(sunshineExe));
+
             var stored = LoadStoredCreds();
             var user = stored?.Username ?? SunshineManager.DefaultAdminUser;
             var pass = stored?.Password ?? "";
@@ -200,7 +274,11 @@ internal sealed class LocalHostPeerHost : IDisposable
 
             return (true, user, pass, null);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (UnauthorizedAccessException)
+        {
+            return (false, SunshineManager.DefaultAdminUser, "", "当前 Sunshine 位于系统受保护目录，普通权限无法自动写入配置，请点击「启用后台守护服务」一次授权即可全自动托管。");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return (false, SunshineManager.DefaultAdminUser, "", $"本地 Sunshine 托管初始化失败：{ex.Message}");
         }

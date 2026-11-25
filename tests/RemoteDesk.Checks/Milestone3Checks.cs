@@ -397,6 +397,286 @@ internal static class Milestone3Checks
             Equal(1, reprovisionCount);
             Equal(true, message.Contains("静默完成配对", StringComparison.Ordinal));
         }),
+
+        ("SunshineManager submits Sunshine 2026 pairing_id + CSRF token and matches ::ffff: client IP", () =>
+        {
+            const string targetId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            const string otherId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+            string? postedPairingId = null;
+            string? postedPin = null;
+            string? postedCsrf = null;
+
+            using var client = new HttpClient(new DelegateHttpHandler(async (req, ct) =>
+            {
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent($$"""
+                            {
+                              "pairings": [
+                                { "id": "{{otherId}}", "name": "OtherPC", "address": "10.126.126.99" },
+                                { "id": "{{targetId}}", "name": "Laptop", "address": "::ffff:10.126.126.5" }
+                              ]
+                            }
+                            """, Encoding.UTF8, "application/json"),
+                    };
+                }
+
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/csrf-token")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"csrf_token":"csrf-tok-999"}""", Encoding.UTF8, "application/json"),
+                    };
+                }
+
+                if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    postedCsrf = req.Headers.TryGetValues("X-CSRF-Token", out var vals) ? vals.FirstOrDefault() : null;
+                    var raw = await req.Content!.ReadAsStringAsync(ct).ConfigureAwait(false);
+                    using var doc = JsonDocument.Parse(raw);
+                    postedPairingId = doc.RootElement.TryGetProperty("pairing_id", out var pid) ? pid.GetString() : null;
+                    postedPin = doc.RootElement.TryGetProperty("pin", out var pinProp) ? pinProp.GetString() : null;
+
+                    var ok = string.Equals(postedPairingId, targetId, StringComparison.Ordinal) &&
+                             string.Equals(postedCsrf, "csrf-tok-999", StringComparison.Ordinal);
+                    return new HttpResponseMessage(ok ? HttpStatusCode.OK : HttpStatusCode.BadRequest)
+                    {
+                        Content = new StringContent(ok ? """{"status":true}""" : """{"status":false}""", Encoding.UTF8, "application/json"),
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }));
+
+            var res = SunshineManager.SubmitPairingPinDetailedAsync(
+                "4829",
+                "Laptop-1",
+                "remotedesk",
+                "pass",
+                new Uri("https://127.0.0.1:47990"),
+                client,
+                CancellationToken.None,
+                remoteClientIp: "10.126.126.5").GetAwaiter().GetResult();
+
+            Equal(true, res.Success);
+            Equal(targetId, postedPairingId);
+            Equal("4829", postedPin);
+            Equal("csrf-tok-999", postedCsrf);
+        }),
+
+        ("SunshineManager polls GET /api/pin until pairing appears and falls back to legacy on 404", () =>
+        {
+            var getPinCount = 0;
+            const string polledId = "cccccccccccccccccccccccccccccccc";
+            using var pollingClient = new HttpClient(new DelegateHttpHandler((req, _) =>
+            {
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    getPinCount++;
+                    var json = getPinCount < 3
+                        ? """{"pairings":[]}"""
+                        : $$"""{"pairings":[{"id":"{{polledId}}","name":"Client","address":"10.126.126.8"}]}""";
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                    });
+                }
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/csrf-token")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"csrf_token":"tok"}""", Encoding.UTF8, "application/json"),
+                    });
+                }
+                if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"status":true}""", Encoding.UTF8, "application/json"),
+                    });
+                }
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            }));
+
+            var polledRes = SunshineManager.SubmitPairingPinDetailedAsync(
+                "1357", "Client", "remotedesk", "pass", new Uri("https://127.0.0.1:47990"), pollingClient).GetAwaiter().GetResult();
+            Equal(true, polledRes.Success);
+            Equal(3, getPinCount);
+
+            var legacyPostHadPairingId = true;
+            using var legacyClient = new HttpClient(new DelegateHttpHandler(async (req, ct) =>
+            {
+                if (req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/api/pin")
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+
+                if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/api/pin")
+                {
+                    var raw = await req.Content!.ReadAsStringAsync(ct).ConfigureAwait(false);
+                    using var doc = JsonDocument.Parse(raw);
+                    legacyPostHadPairingId = doc.RootElement.TryGetProperty("pairing_id", out _);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"status":true}""", Encoding.UTF8, "application/json"),
+                    };
+                }
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }));
+
+            var legacyRes = SunshineManager.SubmitPairingPinDetailedAsync(
+                "2468", "LegacyClient", "remotedesk", "pass", new Uri("https://127.0.0.1:47990"), legacyClient).GetAwaiter().GetResult();
+            Equal(true, legacyRes.Success);
+            Equal(false, legacyPostHadPairingId);
+        }),
+
+        ("GameStreamClient.PairWithPinAsync cancels blocked getservercert immediately when callback fails", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "gs-cancel-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                using var handler = new DelegateHttpHandler(async (req, ct) =>
+                {
+                    if (req.RequestUri!.AbsolutePath == "/serverinfo")
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "<root status_code=\"200\"><hostname>H</hostname><appversion>7.1.431.-1</appversion><PairStatus>0</PairStatus></root>",
+                                Encoding.UTF8,
+                                "application/xml"),
+                        };
+                    }
+
+                    if (req.RequestUri!.AbsolutePath == "/pair")
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                    }
+
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                });
+
+                var client = new GameStreamClient(id, handler);
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var threwFast = false;
+                try
+                {
+                    client.PairWithPinAsync(
+                        "10.126.126.2",
+                        "5678",
+                        onPinReadyAsync: _ => throw new InvalidOperationException("fast-fail-reason")).GetAwaiter().GetResult();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    sw.Stop();
+                    threwFast = ex.Message == "fast-fail-reason" && sw.Elapsed < TimeSpan.FromSeconds(3);
+                }
+
+                Equal(true, threwFast);
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
+            }
+        }),
+
+        ("AutoPairOrchestrator retries handshake on SUNSHINE_REPROVISIONED_RETRY and preserves host error messages", () =>
+        {
+            var idDir = Path.Combine(tempRoot, "autopair-retry-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using var id = GameStreamIdentity.LoadOrCreate(idDir);
+                var getServerCertCount = 0;
+                var gsHandler = new DelegateHttpHandler(async (req, ct) =>
+                {
+                    if (req.RequestUri!.AbsolutePath == "/serverinfo")
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "<root status_code=\"200\"><hostname>H</hostname><appversion>7.1.431.-1</appversion><PairStatus>0</PairStatus></root>",
+                                Encoding.UTF8,
+                                "application/xml"),
+                        };
+                    }
+
+                    if (req.RequestUri!.AbsolutePath == "/pair" && req.RequestUri.Query.Contains("phrase=getservercert", StringComparison.Ordinal))
+                    {
+                        getServerCertCount++;
+                        await Task.Delay(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+                    }
+
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                });
+
+                const string authKey = "retry-test-auth-key-0123456789ab";
+                var pairAttempts = 0;
+                using var server = new AgentPeerServer(
+                    () => new AgentPeerServerState("dev-r", "HOST-R", true, 47989, authKey, false, null, null),
+                    (_, _, _, _) =>
+                    {
+                        pairAttempts++;
+                        if (pairAttempts == 1)
+                            return Task.FromResult<(bool, string, string?)>((false, "Sunshine 已自动修复托管凭据并重启，正在重新发起配对握手。", AgentIpcConstants.ErrorSunshineReprovisionedRetry));
+                        return Task.FromResult<(bool, string, string?)>((false, "EXACT_HOST_FAILURE_REASON", "SUNSHINE_PAIR_FAILED"));
+                    });
+
+                using var bridge = new PeerServerBridgeHandler(server);
+                using var peerClient = new AgentPeerClient(bridge);
+                var orchestrator = new AutoPairOrchestrator(peerClient);
+                var gsClient = new GameStreamClient(id, gsHandler);
+
+                string? observedErr = null;
+                try
+                {
+                    _ = orchestrator.NativeAutoPairAsync(gsClient, "10.126.126.2", 47999, authKey, "Client-X", null).GetAwaiter().GetResult();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    observedErr = ex.Message;
+                }
+
+                Equal(2, getServerCertCount);
+                Equal("EXACT_HOST_FAILURE_REASON", observedErr);
+            }
+            finally
+            {
+                if (Directory.Exists(idDir))
+                    Directory.Delete(idDir, recursive: true);
+            }
+        }),
+
+        ("SunshineManager.EnsureSafeLocalConfig writes address_family=both and disables tray only for managed paths", () =>
+        {
+            var dir = Path.Combine(tempRoot, "sunshine-cfg-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var unmanagedConf = Path.Combine(dir, "unmanaged.conf");
+                SunshineManager.EnsureSafeLocalConfig(unmanagedConf, isManagedInstall: false);
+                var unmanagedText = File.ReadAllText(unmanagedConf);
+                Equal(true, unmanagedText.Contains("origin_web_ui_allowed = pc", StringComparison.Ordinal));
+                Equal(true, unmanagedText.Contains("upnp = off", StringComparison.Ordinal));
+                Equal(true, unmanagedText.Contains("address_family = both", StringComparison.Ordinal));
+                Equal(false, unmanagedText.Contains("system_tray = disabled", StringComparison.Ordinal));
+
+                var managedConf = Path.Combine(dir, "managed.conf");
+                SunshineManager.EnsureSafeLocalConfig(managedConf, isManagedInstall: true);
+                var managedText = File.ReadAllText(managedConf);
+                Equal(true, managedText.Contains("address_family = both", StringComparison.Ordinal));
+                Equal(true, managedText.Contains("system_tray = disabled", StringComparison.Ordinal));
+                Equal(true, managedText.Contains("notify_pre_releases = disabled", StringComparison.Ordinal));
+                Equal(true, SunshineManager.IsManagedSunshinePath(@"C:\Users\Alice\AppData\Local\RemoteDesk\engines\sunshine\sunshine.exe"));
+                Equal(false, SunshineManager.IsManagedSunshinePath(@"C:\Program Files\Sunshine\sunshine.exe"));
+            }
+            finally
+            {
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+        }),
     ];
 
     private sealed class DelegateHttpHandler(

@@ -51,6 +51,18 @@ internal static class AgentIpcClient
         CancellationToken ct = default) =>
         SendAndParseStatusAsync("set_security_pin", JsonSerializer.Serialize(new AgentSetSecurityPinPayload(required, newPin), JsonOptions), ct);
 
+    public static async Task<(bool Ok, string Message)> SubmitLocalPinAsync(
+        string pin,
+        string clientName,
+        CancellationToken ct = default)
+    {
+        var payloadJson = JsonSerializer.Serialize(new AgentSubmitLocalPinPayload(pin, clientName), JsonOptions);
+        var resp = await SendAsync(new AgentIpcRequest("submit_local_pin", payloadJson), ct, TimeSpan.FromSeconds(18)).ConfigureAwait(false);
+        return resp.Ok
+            ? (true, resp.PayloadJson ?? "Sunshine 已完成配对。")
+            : (false, resp.Error ?? "本地配对失败。");
+    }
+
     public static async Task<AgentSunshineCredsDto?> TryGetSunshineCredentialsAsync(CancellationToken ct = default)
     {
         var resp = await SendAsync(new AgentIpcRequest("get_sunshine_creds"), ct).ConfigureAwait(false);
@@ -109,7 +121,7 @@ internal static class AgentIpcClient
         }
     }
 
-    private static async Task<AgentIpcResponse> SendAsync(AgentIpcRequest request, CancellationToken ct)
+    private static async Task<AgentIpcResponse> SendAsync(AgentIpcRequest request, CancellationToken ct, TimeSpan? readTimeout = null)
     {
         try
         {
@@ -119,7 +131,7 @@ internal static class AgentIpcClient
             await pipe.ConnectAsync(connectCts.Token).ConfigureAwait(false);
 
             using var ioCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            ioCts.CancelAfter(ReadTimeout);
+            ioCts.CancelAfter(readTimeout ?? ReadTimeout);
 
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);

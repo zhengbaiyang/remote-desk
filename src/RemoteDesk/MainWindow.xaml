@@ -991,7 +991,8 @@
                                             Style="{StaticResource CompactPrimaryButton}" MinHeight="40" Margin="10,0,0,0" />
                                 </Grid>
                                 <TextBlock x:Name="HostSunshineManagedText" FontSize="12" Foreground="{DynamicResource Ready}"
-                                           Margin="0,8,0,0" Text="同账号默认开启零配置自动配对（无需手动访问 localhost:47990 输入 PIN）。" />
+                                           Margin="0,8,0,0" TextWrapping="Wrap"
+                                           Text="同账号默认开启零配置自动配对；无账号纯局域网首次配对也可直接在下方输入 4 位 PIN 码完成授权，无需打开 Sunshine 控制面板。" />
                             </StackPanel>
                         </Border>
 
@@ -1089,6 +1090,29 @@
                                     <Button Content="前往引擎中心" Click="ShowEnginesPage"
                                             Style="{StaticResource InlineLinkButton}" VerticalAlignment="Center" Margin="4,0,0,6" />
                                 </WrapPanel>
+
+                                <!-- In-App Offline LAN Quick PIN Approval -->
+                                <Border Style="{StaticResource SubPanelCard}" Padding="14,10" Margin="0,10,0,0">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBox x:Name="HostQuickPinInput" MaxLength="4" Width="108" Height="36"
+                                                     Style="{StaticResource DeviceField}"
+                                                     FontFamily="Cascadia Mono, Consolas, Segoe UI" FontSize="14" FontWeight="SemiBold"
+                                                     HorizontalContentAlignment="Center" Padding="8,0"
+                                                     ToolTip="输入控制端提示的 4 位数字 PIN 码"
+                                                     AutomationProperties.AutomationId="HostQuickPinInput" />
+                                            <Button x:Name="SubmitHostQuickPinButton" Content="确认配对"
+                                                    Click="SubmitHostQuickPinClicked"
+                                                    Style="{StaticResource CompactPrimaryButton}" MinHeight="36" Margin="8,0,0,0"
+                                                    AutomationProperties.AutomationId="SubmitHostQuickPin" />
+                                        </StackPanel>
+                                        <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                            <TextBlock Text="局域网快捷配对（免开 Sunshine 面板）" FontSize="13.5" FontWeight="SemiBold" />
+                                            <TextBlock Text="未登录同账号或纯局域网直连时，在此输入控制端显示的 4 位 PIN 码即可直接完成配对。"
+                                                       FontSize="11.5" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
                             </StackPanel>
                         </Border>
 

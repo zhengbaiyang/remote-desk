@@ -15,12 +15,38 @@ internal sealed record SunshinePinSubmitResult(
     bool IsUnreachable,
     string Message);
 
+internal sealed record SunshinePendingPairing(
+    string Id,
+    string? Name,
+    string? Address);
+
+internal sealed record SunshinePendingPairingsQueryResult(
+    bool Supported,
+    bool IsUnauthorized,
+    bool IsUnreachable,
+    IReadOnlyList<SunshinePendingPairing> Pairings);
+
+internal sealed record SunshineSelfHealResult(
+    bool Success,
+    string Message,
+    bool SunshineRestarted = false);
+
 internal static class SunshineManager
 {
     public const string DefaultAdminUser = "remotedesk";
     public const int DefaultControlPort = 47990;
     public const int DefaultStreamPort = 47989;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static bool IsManagedSunshinePath(string? sunshineExecutable)
+    {
+        if (string.IsNullOrWhiteSpace(sunshineExecutable))
+            return false;
+
+        var normalized = sunshineExecutable.Replace('/', Path.DirectorySeparatorChar);
+        var marker = $"{Path.DirectorySeparatorChar}RemoteDesk{Path.DirectorySeparatorChar}engines{Path.DirectorySeparatorChar}";
+        return normalized.Contains(marker, StringComparison.OrdinalIgnoreCase);
+    }
 
     public static string ResolveConfigPath(string sunshineExecutable)
     {
@@ -41,7 +67,7 @@ internal static class SunshineManager
         return nested;
     }
 
-    public static void EnsureSafeLocalConfig(string configPath)
+    public static void EnsureSafeLocalConfig(string configPath, bool isManagedInstall = false)
     {
         if (string.IsNullOrWhiteSpace(configPath))
             throw new ArgumentException("Sunshine 配置文件路径无效。", nameof(configPath));
@@ -49,12 +75,22 @@ internal static class SunshineManager
         var fullPath = Path.GetFullPath(configPath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
-        var lines = File.Exists(fullPath)
-            ? File.ReadAllLines(fullPath, Encoding.UTF8).ToList()
-            : new List<string>();
+        var existingLines = File.Exists(fullPath)
+            ? File.ReadAllLines(fullPath, Encoding.UTF8)
+            : [];
+        var lines = existingLines.ToList();
 
         UpsertConfigKey(lines, "origin_web_ui_allowed", "pc");
         UpsertConfigKey(lines, "upnp", "off");
+        UpsertConfigKey(lines, "address_family", "both");
+        if (isManagedInstall)
+        {
+            UpsertConfigKey(lines, "system_tray", "disabled");
+            UpsertConfigKey(lines, "notify_pre_releases", "disabled");
+        }
+
+        if (File.Exists(fullPath) && existingLines.SequenceEqual(lines, StringComparer.Ordinal))
+            return;
 
         File.WriteAllLines(fullPath, lines, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
@@ -107,7 +143,7 @@ internal static class SunshineManager
         try
         {
             var configPath = ResolveConfigPath(sunshineExecutable);
-            EnsureSafeLocalConfig(configPath);
+            EnsureSafeLocalConfig(configPath, IsManagedSunshinePath(sunshineExecutable));
 
             HostServiceManager.TryStopSunshineService();
             HostServiceManager.StopSunshineHost();
@@ -186,54 +222,115 @@ internal static class SunshineManager
         Func<Task<bool>> wakeHostAsync,
         Uri? baseUri = null,
         HttpClient? httpClient = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? remoteClientIp = null)
     {
+        var result = await SubmitPinWithSelfHealDetailedAsync(
+            pin,
+            clientName,
+            getCredentials,
+            reprovisionAndStartAsync,
+            wakeHostAsync,
+            baseUri,
+            httpClient,
+            ct,
+            remoteClientIp).ConfigureAwait(false);
+        return (result.Success, result.Message);
+    }
+
+    public static async Task<SunshineSelfHealResult> SubmitPinWithSelfHealDetailedAsync(
+        string pin,
+        string clientName,
+        Func<(string Username, string Password)?> getCredentials,
+        Func<CancellationToken, Task<(bool Ok, string Username, string Password, string? Error)>> reprovisionAndStartAsync,
+        Func<Task<bool>> wakeHostAsync,
+        Uri? baseUri = null,
+        HttpClient? httpClient = null,
+        CancellationToken ct = default,
+        string? remoteClientIp = null)
+    {
+        var restarted = false;
         var creds = getCredentials();
         if (creds is null || string.IsNullOrEmpty(creds.Value.Password))
         {
             var prov = await reprovisionAndStartAsync(ct).ConfigureAwait(false);
             if (!prov.Ok)
-                return (false, prov.Error ?? "初始化 Sunshine 托管凭据失败。");
+                return new SunshineSelfHealResult(false, prov.Error ?? "初始化 Sunshine 托管凭据失败。");
 
             creds = (prov.Username, prov.Password);
+            restarted = true;
             await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: true, baseUri, httpClient, ct).ConfigureAwait(false);
         }
-
-        var probe = await VerifyLocalCredentialsAsync(creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct).ConfigureAwait(false);
-        if (!probe.Reachable)
+        else
         {
-            await wakeHostAsync().ConfigureAwait(false);
-            await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: false, baseUri, httpClient, ct).ConfigureAwait(false);
+            var probe = await VerifyLocalCredentialsAsync(creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct).ConfigureAwait(false);
+            if (!probe.Reachable)
+            {
+                await wakeHostAsync().ConfigureAwait(false);
+                restarted = true;
+                await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: false, baseUri, httpClient, ct).ConfigureAwait(false);
+
+                var postWakeProbe = await VerifyLocalCredentialsAsync(creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct).ConfigureAwait(false);
+                if (postWakeProbe.Reachable && !postWakeProbe.Authorized)
+                {
+                    var healedAfterWake = await reprovisionAndStartAsync(ct).ConfigureAwait(false);
+                    if (!healedAfterWake.Ok)
+                        return new SunshineSelfHealResult(false, healedAfterWake.Error ?? "重置并修复 Sunshine 管理员凭据失败。");
+
+                    creds = (healedAfterWake.Username, healedAfterWake.Password);
+                    await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: true, baseUri, httpClient, ct).ConfigureAwait(false);
+                }
+            }
+            else if (!probe.Authorized)
+            {
+                var prov = await reprovisionAndStartAsync(ct).ConfigureAwait(false);
+                if (!prov.Ok)
+                    return new SunshineSelfHealResult(false, prov.Error ?? "重置并修复 Sunshine 管理员凭据失败。");
+
+                creds = (prov.Username, prov.Password);
+                restarted = true;
+                await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: true, baseUri, httpClient, ct).ConfigureAwait(false);
+            }
         }
 
         var attempt = await SubmitPairingPinDetailedAsync(
-            pin, clientName, creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct).ConfigureAwait(false);
+            pin, clientName, creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct, remoteClientIp).ConfigureAwait(false);
 
         if (attempt.Success)
-            return (true, attempt.Message);
+            return new SunshineSelfHealResult(true, attempt.Message, SunshineRestarted: false);
 
         if (attempt.IsUnauthorized)
         {
             var healed = await reprovisionAndStartAsync(ct).ConfigureAwait(false);
             if (!healed.Ok)
-                return (false, healed.Error ?? "重置并修复 Sunshine 管理员凭据失败。");
+                return new SunshineSelfHealResult(false, healed.Error ?? "重置并修复 Sunshine 管理员凭据失败。");
 
             await WaitUntilLocalApiReadyAsync(healed.Username, healed.Password, requireAuth: true, baseUri, httpClient, ct).ConfigureAwait(false);
             var retried = await SubmitPairingPinDetailedAsync(
-                pin, clientName, healed.Username, healed.Password, baseUri, httpClient, ct).ConfigureAwait(false);
-            return (retried.Success, retried.Message);
+                pin, clientName, healed.Username, healed.Password, baseUri, httpClient, ct, remoteClientIp).ConfigureAwait(false);
+            if (retried.Success)
+                return new SunshineSelfHealResult(true, retried.Message, SunshineRestarted: false);
+
+            return new SunshineSelfHealResult(false, "Sunshine 已自动修复托管凭据并重启，正在重新发起配对握手。", SunshineRestarted: true);
         }
 
         if (attempt.IsUnreachable)
         {
             await wakeHostAsync().ConfigureAwait(false);
+            restarted = true;
             await WaitUntilLocalApiReadyAsync(creds.Value.Username, creds.Value.Password, requireAuth: false, baseUri, httpClient, ct).ConfigureAwait(false);
             var retried = await SubmitPairingPinDetailedAsync(
-                pin, clientName, creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct).ConfigureAwait(false);
-            return (retried.Success, retried.Message);
+                pin, clientName, creds.Value.Username, creds.Value.Password, baseUri, httpClient, ct, remoteClientIp).ConfigureAwait(false);
+            if (retried.Success)
+                return new SunshineSelfHealResult(true, retried.Message, SunshineRestarted: false);
+
+            return new SunshineSelfHealResult(false, retried.Message, SunshineRestarted: restarted);
         }
 
-        return (false, attempt.Message);
+        if (restarted)
+            return new SunshineSelfHealResult(false, "Sunshine 已就绪，正在重新发起配对握手。", SunshineRestarted: true);
+
+        return new SunshineSelfHealResult(false, attempt.Message, SunshineRestarted: false);
     }
 
     private static async Task WaitUntilLocalApiReadyAsync(
@@ -244,7 +341,7 @@ internal static class SunshineManager
         HttpClient? httpClient,
         CancellationToken ct)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(12);
         while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
         {
             var (reachable, authorized) = await VerifyLocalCredentialsAsync(
@@ -254,6 +351,177 @@ internal static class SunshineManager
 
             await Task.Delay(250, ct).ConfigureAwait(false);
         }
+    }
+
+    public static async Task<SunshinePendingPairingsQueryResult> GetPendingPairingsAsync(
+        string username,
+        string password,
+        Uri? baseUri = null,
+        HttpClient? httpClient = null,
+        CancellationToken ct = default)
+    {
+        var targetBase = baseUri ?? new Uri($"https://127.0.0.1:{DefaultControlPort}");
+        var ownsClient = httpClient is null;
+        var client = httpClient ?? CreateLocalApiClient();
+        try
+        {
+            var endpoint = new Uri(targetBase, "/api/pin");
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+
+            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                return new SunshinePendingPairingsQueryResult(true, true, false, []);
+
+            if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+                return new SunshinePendingPairingsQueryResult(false, false, false, []);
+
+            if (!response.IsSuccessStatusCode)
+                return new SunshinePendingPairingsQueryResult(false, false, false, []);
+
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body))
+                return new SunshinePendingPairingsQueryResult(false, false, false, []);
+
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object ||
+                !doc.RootElement.TryGetProperty("pairings", out var pairingsProp) ||
+                pairingsProp.ValueKind != JsonValueKind.Array)
+            {
+                return new SunshinePendingPairingsQueryResult(false, false, false, []);
+            }
+
+            var list = new List<SunshinePendingPairing>();
+            foreach (var item in pairingsProp.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var id = item.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String
+                    ? idProp.GetString()?.Trim()
+                    : null;
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var name = item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String
+                    ? nameProp.GetString()
+                    : null;
+                var address = item.TryGetProperty("address", out var addrProp) && addrProp.ValueKind == JsonValueKind.String
+                    ? addrProp.GetString()
+                    : null;
+                list.Add(new SunshinePendingPairing(id, name, address));
+            }
+
+            return new SunshinePendingPairingsQueryResult(true, false, false, list);
+        }
+        catch (JsonException)
+        {
+            return new SunshinePendingPairingsQueryResult(false, false, false, []);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return new SunshinePendingPairingsQueryResult(false, false, true, []);
+        }
+        finally
+        {
+            if (ownsClient)
+                client.Dispose();
+        }
+    }
+
+    public static async Task<string?> TryFetchCsrfTokenAsync(
+        string username,
+        string password,
+        Uri? baseUri = null,
+        HttpClient? httpClient = null,
+        CancellationToken ct = default)
+    {
+        var targetBase = baseUri ?? new Uri($"https://127.0.0.1:{DefaultControlPort}");
+        var ownsClient = httpClient is null;
+        var client = httpClient ?? CreateLocalApiClient(TimeSpan.FromSeconds(3));
+        try
+        {
+            var endpoint = new Uri(targetBase, "/api/csrf-token");
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+
+            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body))
+                return null;
+
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("csrf_token", out var tokProp) &&
+                tokProp.ValueKind == JsonValueKind.String)
+            {
+                var tok = tokProp.GetString();
+                return string.IsNullOrWhiteSpace(tok) ? null : tok;
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return null;
+        }
+        finally
+        {
+            if (ownsClient)
+                client.Dispose();
+        }
+    }
+
+    internal static IReadOnlyList<SunshinePendingPairing> OrderPendingPairings(
+        IReadOnlyList<SunshinePendingPairing> pairings,
+        string? remoteClientIp)
+    {
+        if (pairings.Count <= 1)
+            return pairings;
+
+        var targetIp = NormalizeIpAddress(remoteClientIp);
+        var matched = new List<SunshinePendingPairing>();
+        var others = new List<SunshinePendingPairing>();
+
+        for (var i = pairings.Count - 1; i >= 0; i--)
+        {
+            var p = pairings[i];
+            var pIp = NormalizeIpAddress(p.Address);
+            if (targetIp is not null && pIp is not null && string.Equals(targetIp, pIp, StringComparison.OrdinalIgnoreCase))
+                matched.Add(p);
+            else
+                others.Add(p);
+        }
+
+        if (matched.Count == 0)
+            return others;
+
+        matched.AddRange(others);
+        return matched;
+    }
+
+    private static string? NormalizeIpAddress(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith('[') && trimmed.EndsWith(']') && trimmed.Length > 2)
+            trimmed = trimmed[1..^1];
+
+        var scopeIdx = trimmed.IndexOf('%');
+        if (scopeIdx >= 0)
+            trimmed = trimmed[..scopeIdx];
+
+        const string mappedPrefix = "::ffff:";
+        if (trimmed.StartsWith(mappedPrefix, StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[mappedPrefix.Length..];
+
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
     public static async Task<(bool Success, string Message)> SubmitPairingPinAsync(
@@ -277,7 +545,8 @@ internal static class SunshineManager
         string password,
         Uri? baseUri = null,
         HttpClient? httpClient = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? remoteClientIp = null)
     {
         if (string.IsNullOrWhiteSpace(pin) || pin.Trim().Length != 4 || !pin.Trim().All(char.IsAsciiDigit))
             return new SunshinePinSubmitResult(false, false, false, "PIN 码必须为 4 位数字。");
@@ -290,12 +559,130 @@ internal static class SunshineManager
         var client = httpClient ?? CreateLocalApiClient();
         try
         {
+            var pendingQuery = await GetPendingPairingsAsync(username, password, targetBase, client, ct).ConfigureAwait(false);
+            if (pendingQuery.IsUnauthorized)
+            {
+                return new SunshinePinSubmitResult(
+                    false,
+                    IsUnauthorized: true,
+                    IsUnreachable: false,
+                    "Sunshine 管理员凭据鉴权失败（HTTP 401）。");
+            }
+
+            if (pendingQuery.IsUnreachable)
+            {
+                return new SunshinePinSubmitResult(
+                    false,
+                    IsUnauthorized: false,
+                    IsUnreachable: true,
+                    "无法连接本地 Sunshine API。");
+            }
+
+            if (pendingQuery.Supported)
+            {
+                var pairings = pendingQuery.Pairings;
+                if (pairings.Count == 0)
+                {
+                    var pollDeadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(3000);
+                    while (DateTime.UtcNow < pollDeadline && !ct.IsCancellationRequested)
+                    {
+                        await Task.Delay(200, ct).ConfigureAwait(false);
+                        pendingQuery = await GetPendingPairingsAsync(username, password, targetBase, client, ct).ConfigureAwait(false);
+                        if (pendingQuery.IsUnauthorized)
+                        {
+                            return new SunshinePinSubmitResult(false, true, false, "Sunshine 管理员凭据鉴权失败（HTTP 401）。");
+                        }
+                        if (pendingQuery.IsUnreachable)
+                        {
+                            return new SunshinePinSubmitResult(false, false, true, "无法连接本地 Sunshine API。");
+                        }
+                        if (!pendingQuery.Supported || pendingQuery.Pairings.Count > 0)
+                        {
+                            pairings = pendingQuery.Pairings;
+                            break;
+                        }
+                    }
+                }
+
+                if (pendingQuery.Supported)
+                {
+                    if (pairings.Count == 0)
+                    {
+                        return new SunshinePinSubmitResult(
+                            false,
+                            IsUnauthorized: false,
+                            IsUnreachable: false,
+                            "Sunshine 暂未收到待配对会话（请确认目标主机 47989 端口可达且配对未超时）。");
+                    }
+
+                    var ordered = OrderPendingPairings(pairings, remoteClientIp);
+                    var csrfToken = await TryFetchCsrfTokenAsync(username, password, targetBase, client, ct).ConfigureAwait(false);
+                    SunshinePinSubmitResult? lastFailure = null;
+
+                    foreach (var candidate in ordered)
+                    {
+                        var payloadJson = JsonSerializer.Serialize(
+                            new { pairing_id = candidate.Id, pin = normalizedPin, name = normalizedClient },
+                            JsonOptions);
+                        var result = await PostPinPayloadWithCsrfRetryAsync(
+                            targetBase,
+                            client,
+                            username,
+                            password,
+                            payloadJson,
+                            csrfToken,
+                            ct).ConfigureAwait(false);
+
+                        if (result.Success || result.IsUnauthorized || result.IsUnreachable)
+                            return result;
+
+                        lastFailure = result;
+                    }
+
+                    return lastFailure ?? new SunshinePinSubmitResult(false, false, false, "Sunshine 未匹配到待配对会话（可能超时或已配对）。");
+                }
+            }
+
+            var legacyJson = JsonSerializer.Serialize(new { pin = normalizedPin, name = normalizedClient }, JsonOptions);
+            return await PostPinPayloadWithCsrfRetryAsync(
+                targetBase,
+                client,
+                username,
+                password,
+                legacyJson,
+                csrfToken: null,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return new SunshinePinSubmitResult(false, false, IsUnreachable: true, $"无法连接本地 Sunshine API：{ex.Message}");
+        }
+        finally
+        {
+            if (ownsClient)
+                client.Dispose();
+        }
+    }
+
+    private static async Task<SunshinePinSubmitResult> PostPinPayloadWithCsrfRetryAsync(
+        Uri targetBase,
+        HttpClient client,
+        string username,
+        string password,
+        string payloadJson,
+        string? csrfToken,
+        CancellationToken ct)
+    {
+        var tokenToUse = csrfToken;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
             var endpoint = new Uri(targetBase, "/api/pin");
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
             var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
-            var json = JsonSerializer.Serialize(new { pin = normalizedPin, name = normalizedClient }, JsonOptions);
-            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            if (!string.IsNullOrWhiteSpace(tokenToUse))
+                request.Headers.TryAddWithoutValidation("X-CSRF-Token", tokenToUse);
+            request.Content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
             using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
@@ -309,13 +696,26 @@ internal static class SunshineManager
                     $"Sunshine 管理员凭据鉴权失败（HTTP {(int)response.StatusCode}）。");
             }
 
+            if (response.StatusCode == HttpStatusCode.BadRequest &&
+                attempt == 0 &&
+                TryExtractApiError(body) is { } badReqError &&
+                badReqError.Contains("CSRF", StringComparison.OrdinalIgnoreCase))
+            {
+                tokenToUse = await TryFetchCsrfTokenAsync(username, password, targetBase, client, ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(tokenToUse))
+                    continue;
+            }
+
             if (!response.IsSuccessStatusCode)
             {
+                var apiErr = TryExtractApiError(body);
                 return new SunshinePinSubmitResult(
                     false,
                     IsUnauthorized: false,
                     IsUnreachable: false,
-                    $"Sunshine 配对接口拒绝请求（HTTP {(int)response.StatusCode}）。");
+                    string.IsNullOrWhiteSpace(apiErr)
+                        ? $"Sunshine 配对接口拒绝请求（HTTP {(int)response.StatusCode}）。"
+                        : $"Sunshine 配对接口拒绝请求（HTTP {(int)response.StatusCode}：{apiErr}）。");
             }
 
             if (!string.IsNullOrWhiteSpace(body))
@@ -331,9 +731,17 @@ internal static class SunshineManager
                             JsonValueKind.String => string.Equals(statusProp.GetString(), "true", StringComparison.OrdinalIgnoreCase),
                             _ => false,
                         };
-                        return ok
-                            ? new SunshinePinSubmitResult(true, false, false, "Sunshine 已静默完成配对。")
-                            : new SunshinePinSubmitResult(false, false, false, "Sunshine 未匹配到待配对会话（可能超时或已配对）。");
+                        if (ok)
+                            return new SunshinePinSubmitResult(true, false, false, "Sunshine 已静默完成配对。");
+
+                        var errMsg = TryExtractApiError(body);
+                        return new SunshinePinSubmitResult(
+                            false,
+                            false,
+                            false,
+                            string.IsNullOrWhiteSpace(errMsg)
+                                ? "Sunshine 未匹配到待配对会话（可能超时或已配对）。"
+                                : $"Sunshine 配对未通过：{errMsg}");
                     }
                 }
                 catch (JsonException)
@@ -344,15 +752,30 @@ internal static class SunshineManager
 
             return new SunshinePinSubmitResult(true, false, false, "Sunshine 已静默完成配对。");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+
+        return new SunshinePinSubmitResult(false, false, false, "Sunshine 配对请求未通过 CSRF 校验。");
+    }
+
+    private static string? TryExtractApiError(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
         {
-            return new SunshinePinSubmitResult(false, false, IsUnreachable: true, $"无法连接本地 Sunshine API：{ex.Message}");
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("error", out var errProp) &&
+                errProp.ValueKind == JsonValueKind.String)
+            {
+                return errProp.GetString()?.Trim();
+            }
         }
-        finally
+        catch (JsonException)
         {
-            if (ownsClient)
-                client.Dispose();
         }
+
+        return null;
     }
 
     private static HttpClient CreateLocalApiClient(TimeSpan? timeout = null)

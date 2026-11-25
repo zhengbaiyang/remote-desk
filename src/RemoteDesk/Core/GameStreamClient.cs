@@ -93,7 +93,8 @@ internal sealed class GameStreamClient
         var certUrl = $"http://{uriHost}:{HttpPort}/pair?uniqueid={_identity.UniqueId}&devicename=roth&updateState=1&phrase=getservercert&salt={ToLowerHex(salt)}&clientcert={_identity.ClientCertPemHex}";
 
         // Sunshine blocks /pair?phrase=getservercert until /api/pin is posted, while mocks or older hosts return immediately.
-        var getCertTask = SendHttpGetAsync(certUrl, PairTimeout, ct);
+        using var pairCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var getCertTask = SendHttpGetAsync(certUrl, PairTimeout, pairCts.Token);
         var pinCallbackDone = false;
         Exception? pinCallbackException = null;
 
@@ -110,18 +111,31 @@ internal sealed class GameStreamClient
                 catch (Exception ex)
                 {
                     pinCallbackException = ex;
+                    try { pairCts.Cancel(); } catch { }
                 }
             }
         }
 
-        var certXml = await getCertTask.ConfigureAwait(false);
+        string certXml;
+        try
+        {
+            certXml = await getCertTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (pinCallbackException is not null && !ct.IsCancellationRequested)
+        {
+            throw pinCallbackException;
+        }
+        catch when (pinCallbackException is not null)
+        {
+            throw pinCallbackException;
+        }
+
+        if (pinCallbackException is not null)
+            throw pinCallbackException;
+
         if (!pinCallbackDone && onPinReadyAsync is not null)
         {
             await onPinReadyAsync(ct).ConfigureAwait(false);
-        }
-        else if (pinCallbackException is not null)
-        {
-            throw pinCallbackException;
         }
 
         var certDoc = ParseXml(certXml);
