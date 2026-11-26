@@ -41,9 +41,28 @@ internal sealed record EasyTierConfig
 
     public string PeerUrl { get; init; } = "";
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FallbackPeerUrl { get; init; }
+
     public bool EnableRelayFallback { get; init; } = true;
 
     public bool AutoStartWithApp { get; init; }
+
+    public IReadOnlyList<string> GetEffectivePeerUrls()
+    {
+        var urls = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(PeerUrl))
+            urls.Add(PeerUrl.Trim());
+
+        if (!string.IsNullOrWhiteSpace(FallbackPeerUrl))
+        {
+            var fallback = FallbackPeerUrl.Trim();
+            if (!urls.Any(existing => string.Equals(existing, fallback, StringComparison.OrdinalIgnoreCase)))
+                urls.Add(fallback);
+        }
+
+        return urls;
+    }
 
     public static EasyTierConfig Validate(EasyTierConfig config)
     {
@@ -52,6 +71,15 @@ internal sealed record EasyTierConfig
         var networkName = ValidateNetworkToken(config.NetworkName, nameof(config.NetworkName));
         var networkSecret = ValidateNetworkToken(config.NetworkSecret, nameof(config.NetworkSecret));
         var peerUrl = ValidatePeerUrl(config.PeerUrl);
+        string? fallbackPeerUrl = string.IsNullOrEmpty(config.FallbackPeerUrl)
+            ? null
+            : ValidatePeerUrl(config.FallbackPeerUrl);
+
+        if (fallbackPeerUrl is not null &&
+            string.Equals(fallbackPeerUrl, peerUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            fallbackPeerUrl = null;
+        }
 
         string? virtualIpv4 = config.VirtualIpv4;
         if (!config.AutoAssignIpv4 && !string.IsNullOrEmpty(virtualIpv4))
@@ -65,6 +93,7 @@ internal sealed record EasyTierConfig
             NetworkSecret = networkSecret,
             VirtualIpv4 = virtualIpv4,
             PeerUrl = peerUrl,
+            FallbackPeerUrl = fallbackPeerUrl,
         };
     }
 

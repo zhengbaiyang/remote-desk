@@ -516,10 +516,14 @@ public partial class MainWindow
 
         var autoAssign = EasyTierAutoAssignToggle.IsChecked == true;
         var rawVirtualIp = EasyTierVirtualIpv4Input.Text.Trim();
+        var peerUrlInput = EasyTierPeerUrlInput.Text.Trim();
         var draft = new EasyTierConfig
         {
             Enabled = enabled,
-            PeerUrl = EasyTierPeerUrlInput.Text.Trim(),
+            PeerUrl = peerUrlInput,
+            FallbackPeerUrl = string.Equals(peerUrlInput, settings.EasyTier?.PeerUrl, StringComparison.OrdinalIgnoreCase)
+                ? settings.EasyTier?.FallbackPeerUrl
+                : null,
             NetworkName = EasyTierNetworkNameInput.Text.Trim(),
             NetworkSecret = GetEasyTierSecretText().Trim(),
             AutoAssignIpv4 = autoAssign,

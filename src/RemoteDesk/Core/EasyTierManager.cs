@@ -120,10 +120,10 @@ internal static class EasyTierManager
             startInfo.ArgumentList.Add(validated.VirtualIpv4);
         }
 
-        if (!string.IsNullOrEmpty(validated.PeerUrl))
+        foreach (var peerUrl in validated.GetEffectivePeerUrls())
         {
             startInfo.ArgumentList.Add("-p");
-            startInfo.ArgumentList.Add(validated.PeerUrl);
+            startInfo.ArgumentList.Add(peerUrl);
         }
 
         startInfo.ArgumentList.Add("--hostname");
@@ -159,10 +159,10 @@ internal static class EasyTierManager
             args.Add(validated.VirtualIpv4);
         }
 
-        if (!string.IsNullOrEmpty(validated.PeerUrl))
+        foreach (var peerUrl in validated.GetEffectivePeerUrls())
         {
             args.Add("-p");
-            args.Add(validated.PeerUrl);
+            args.Add(peerUrl);
         }
 
         args.Add("--hostname");
@@ -388,9 +388,12 @@ internal static class EasyTierManager
 
                 var peers = ParsePeersJson(stdout);
                 var localIpv4 = TryExtractLocalIpv4(peers);
+                var remotePeerCount = peers.Count(p => !p.IsSelf);
                 var needsElevation = localIpv4 is null && !IsCurrentProcessElevated();
                 var detail = localIpv4 is not null
-                    ? $"已连接虚拟网段（本机 {localIpv4}，共 {peers.Count} 个节点）"
+                    ? (remotePeerCount == 0 && !string.IsNullOrEmpty(peerUrl)
+                        ? $"虚拟网卡就绪（本机 {localIpv4}），但暂未连上中继或远端节点，请检查网络/代理或等待 WS 备用通道重连"
+                        : $"已连接虚拟网段（本机 {localIpv4}，共 {peers.Count} 个节点）")
                     : needsElevation
                         ? "EasyTier 运行中但未能分配虚拟 IP：Windows 创建虚拟网卡需要管理员权限，请点击「启用后台守护服务」修复。"
                         : peers.Count > 0

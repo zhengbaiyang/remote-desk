@@ -48,7 +48,8 @@ internal sealed class AgentPeerClient : IDisposable
         string targetHost,
         int agentPort,
         string agentAuthKey,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        TimeSpan? timeoutOverride = null)
     {
         var validatedHost = DeviceProfile.ValidateHostAddress(targetHost, nameof(targetHost));
         var formattedHost = validatedHost.Contains(':') ? $"[{validatedHost}]" : validatedHost;
@@ -58,7 +59,7 @@ internal sealed class AgentPeerClient : IDisposable
         try
         {
             using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            reqCts.CancelAfter(RequestTimeout);
+            reqCts.CancelAfter(timeoutOverride ?? RequestTimeout);
             using var req = BuildSignedRequest(HttpMethod.Get, baseUrl, path, [], agentAuthKey);
             using var resp = await _httpClient.SendAsync(req, reqCts.Token).ConfigureAwait(false);
             var raw = await resp.Content.ReadAsStringAsync(reqCts.Token).ConfigureAwait(false);
@@ -69,6 +70,10 @@ internal sealed class AgentPeerClient : IDisposable
             return info is not null
                 ? (true, info, null)
                 : (false, null, "目标节点返回了无效的状态响应。");
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return (false, null, "无法连接目标节点控制服务（连接超时）。");
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {

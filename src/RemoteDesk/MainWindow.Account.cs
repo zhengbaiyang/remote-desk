@@ -280,6 +280,7 @@ public partial class MainWindow
             {
                 Enabled = true,
                 PeerUrl = auth.MeshConfig.PeerUrl,
+                FallbackPeerUrl = string.IsNullOrWhiteSpace(auth.MeshConfig.FallbackWsUrl) ? null : auth.MeshConfig.FallbackWsUrl.Trim(),
                 NetworkName = auth.MeshConfig.NetworkName,
                 NetworkSecret = auth.MeshConfig.NetworkSecret,
                 AutoAssignIpv4 = true,
@@ -448,6 +449,7 @@ public partial class MainWindow
             {
                 Enabled = true,
                 PeerUrl = profile.MeshConfig.PeerUrl,
+                FallbackPeerUrl = string.IsNullOrWhiteSpace(profile.MeshConfig.FallbackWsUrl) ? null : profile.MeshConfig.FallbackWsUrl.Trim(),
                 NetworkName = profile.MeshConfig.NetworkName,
                 NetworkSecret = profile.MeshConfig.NetworkSecret,
                 AutoAssignIpv4 = string.IsNullOrWhiteSpace(assignedIp),
@@ -953,44 +955,80 @@ public partial class MainWindow
 
         if (synced is not null)
         {
+            var primaryHost = targetHost;
             var pairedIds = settings.PairedDeviceIds ?? [];
             var alreadyPaired = pairedIds.Contains(synced.Id, StringComparer.OrdinalIgnoreCase);
             var needsPair = !alreadyPaired || forcePair;
+            var agentPort = synced.AgentPort > 0 ? synced.AgentPort : AgentIpcConstants.DefaultAgentPort;
 
-            if (!needsPair)
+            string? plainAuthKey = null;
+            if (!string.IsNullOrEmpty(settings.Account?.MeshConfig?.AgentAuthKey))
+                SecretProtector.TryUnprotect(settings.Account.MeshConfig.AgentAuthKey, out plainAuthKey);
+
+            ConnectButton.IsEnabled = false;
+            PairButton.IsEnabled = false;
+            try
             {
-                try
+                TargetHostResolution? resolution = null;
+                if (!string.IsNullOrEmpty(plainAuthKey))
                 {
-                    using var probeIdentity = GameStreamIdentity.LoadOrCreate();
-                    var probeClient = new GameStreamClient(probeIdentity);
-                    var probeInfo = await probeClient.GetServerInfoAsync(targetHost);
-                    if (probeInfo.PairStatus != 1)
-                        needsPair = true;
-                }
-                catch
-                {
-                    // Let RemoteSessionWindow surface detailed connectivity or pairing diagnostics.
-                }
-            }
+                    ShowStatus($"正在探测「{synced.Name}」最佳连接链路…");
+                    using var probePeerClient = new AgentPeerClient();
+                    resolution = await TargetHostResolver.ResolveAsync(
+                        synced,
+                        easyTierPeers.Select(p => p.Peer).ToList(),
+                        agentPort,
+                        plainAuthKey,
+                        probePeerClient);
 
-            if (needsPair)
-            {
-                string? plainAuthKey = null;
-                if (!string.IsNullOrEmpty(settings.Account?.MeshConfig?.AgentAuthKey))
-                    SecretProtector.TryUnprotect(settings.Account.MeshConfig.AgentAuthKey, out plainAuthKey);
-
-                if (string.IsNullOrEmpty(plainAuthKey))
-                {
-                    ShowStatus("缺少同账号安全认证密钥，请尝试在「网络节点」重新同步账号。", warning: true);
-                    return;
+                    if (resolution.Succeeded && !string.IsNullOrWhiteSpace(resolution.ResolvedHost))
+                    {
+                        targetHost = resolution.ResolvedHost;
+                        if (resolution.UsedLanFallback)
+                            ShowStatus($"虚拟内网暂不可达，已自动切换同网段直连 ({targetHost})…");
+                    }
+                    else if (needsPair)
+                    {
+                        ShowStatus(resolution.FailureMessage ?? "无法连接目标节点控制服务。", warning: true);
+                        return;
+                    }
+                    else
+                    {
+                        targetHost = primaryHost;
+                    }
                 }
 
-                ConnectButton.IsEnabled = false;
-                PairButton.IsEnabled = false;
-                ShowStatus($"正在为「{synced.Name}」执行静默安全配对…");
-                try
+                if (!needsPair)
                 {
-                    var agentPort = synced.AgentPort > 0 ? synced.AgentPort : AgentIpcConstants.DefaultAgentPort;
+                    try
+                    {
+                        using var probeIdentity = GameStreamIdentity.LoadOrCreate();
+                        var probeClient = new GameStreamClient(probeIdentity);
+                        var probeInfo = await probeClient.GetServerInfoAsync(targetHost);
+                        if (probeInfo.PairStatus != 1)
+                            needsPair = true;
+                    }
+                    catch
+                    {
+                        // Let RemoteSessionWindow surface detailed connectivity or pairing diagnostics.
+                    }
+                }
+
+                if (needsPair)
+                {
+                    if (string.IsNullOrEmpty(plainAuthKey))
+                    {
+                        ShowStatus("缺少同账号安全认证密钥，请尝试在「网络节点」重新同步账号。", warning: true);
+                        return;
+                    }
+
+                    if (resolution is { Succeeded: false })
+                    {
+                        ShowStatus(resolution.FailureMessage ?? "无法连接目标节点控制服务。", warning: true);
+                        return;
+                    }
+
+                    ShowStatus($"正在为「{synced.Name}」执行静默安全配对…");
                     var localHostName = HostServiceManager.GetLocalNetworkInfo().HostName;
 
                     using var identity = GameStreamIdentity.LoadOrCreate();
@@ -1027,23 +1065,23 @@ public partial class MainWindow
                         var updatedPaired = pairedIds.Append(synced.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                         SaveSettings(settings with { PairedDeviceIds = updatedPaired });
                     }
-                }
-                catch (Exception error) when (error is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException or InvalidDataException or IOException)
-                {
-                    ShowStatus($"自动配对失败：{error.Message}", warning: true);
-                    return;
-                }
-                finally
-                {
-                    ConnectButton.IsEnabled = true;
-                    PairButton.IsEnabled = true;
-                }
 
-                if (forcePair)
-                {
-                    ShowStatus($"已完成「{synced.Name}」静默配对，可直接点击「发起高刷连接」。");
-                    return;
+                    if (forcePair)
+                    {
+                        ShowStatus($"已完成「{synced.Name}」静默配对，可直接点击「发起高刷连接」。");
+                        return;
+                    }
                 }
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException or InvalidDataException or IOException)
+            {
+                ShowStatus($"自动配对失败：{error.Message}", warning: true);
+                return;
+            }
+            finally
+            {
+                ConnectButton.IsEnabled = true;
+                PairButton.IsEnabled = true;
             }
         }
 

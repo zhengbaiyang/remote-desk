@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 
 namespace RemoteDesk;
@@ -419,8 +422,195 @@ internal static class EasyTierChecks
                 },
             }));
             Throws<ArgumentException>(() => new SettingsStore(path).Load());
+
+            // Round-trip with FallbackPeerUrl preserved.
+            var withFallback = easyTierConfig with { FallbackPeerUrl = "ws://47.100.1.2:11011" };
+            store.Save(saved with { EasyTier = withFallback });
+            var loadedWithFallback = new SettingsStore(path).Load();
+            Equal(withFallback, loadedWithFallback.EasyTier);
+        }),
+
+        ("EasyTierConfig.Validate validates/deduplicates FallbackPeerUrl and CreateCoreStartInfo/CreateElevatedCoreStartInfo emit both -p entries", () =>
+        {
+            var withFallback = EasyTierConfig.Validate(new EasyTierConfig
+            {
+                Enabled = true,
+                NetworkName = "campus-mesh_02",
+                NetworkSecret = "Secr3t.Key-2026",
+                AutoAssignIpv4 = true,
+                PeerUrl = "tcp://8.137.208.131:11010",
+                FallbackPeerUrl = "ws://8.137.208.131:11011",
+            });
+            Equal("ws://8.137.208.131:11011", withFallback.FallbackPeerUrl);
+            Equal("tcp://8.137.208.131:11010|ws://8.137.208.131:11011", string.Join('|', withFallback.GetEffectivePeerUrls()));
+
+            // Deduplicates when FallbackPeerUrl matches PeerUrl (case-insensitive).
+            var deduped = EasyTierConfig.Validate(new EasyTierConfig
+            {
+                Enabled = true,
+                NetworkName = "campus-mesh_02",
+                NetworkSecret = "Secr3t.Key-2026",
+                PeerUrl = "tcp://8.137.208.131:11010",
+                FallbackPeerUrl = "TCP://8.137.208.131:11010",
+            });
+            Equal<string?>(null, deduped.FallbackPeerUrl);
+            Equal("tcp://8.137.208.131:11010", string.Join('|', deduped.GetEffectivePeerUrls()));
+
+            // Rejects invalid schemes, injection, and whitespace in FallbackPeerUrl.
+            foreach (var badFallback in new[] { "http://1.2.3.4:11011", "ws://1.2.3.4:11011 --evil", " ws://1.2.3.4:11011", "ws://1.2.3.4:11011&calc" })
+            {
+                Throws<ArgumentException>(() => EasyTierConfig.Validate(new EasyTierConfig
+                {
+                    Enabled = true,
+                    NetworkName = "campus-mesh_02",
+                    NetworkSecret = "Secr3t.Key-2026",
+                    PeerUrl = "tcp://8.137.208.131:11010",
+                    FallbackPeerUrl = badFallback,
+                }));
+            }
+
+            var root = Path.Combine(tempRoot, "easytier-fallback-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var coreExe = Path.Combine(root, "easytier-core.exe");
+            File.WriteAllBytes(coreExe, []);
+            var expectedHost = EasyTierManager.SanitizeHostname(Environment.MachineName);
+
+            var startInfo = EasyTierManager.CreateCoreStartInfo(coreExe, withFallback);
+            Equal(
+                $"--network-name|campus-mesh_02|--network-secret|Secr3t.Key-2026|-d|-p|tcp://8.137.208.131:11010|-p|ws://8.137.208.131:11011|--hostname|{expectedHost}|--rpc-portal|{EasyTierManager.DefaultRpcPortal}",
+                string.Join('|', startInfo.ArgumentList));
+
+            var elevatedStart = EasyTierManager.CreateElevatedCoreStartInfo(coreExe, withFallback);
+            Equal(true, elevatedStart.Arguments.Contains("-p tcp://8.137.208.131:11010 -p ws://8.137.208.131:11011", StringComparison.Ordinal));
+        }),
+
+        ("TargetHostResolver.BuildCandidates orders VirtualIpv4 vs LanIpv4 and filters loopback/APIPA", () =>
+        {
+            var device = new SyncedDeviceInfo(
+                Id: "id-1",
+                DeviceKey: "dev-dorm",
+                Name: "DESKTOP-PB9FT5O",
+                Hostname: "DESKTOP-PB9FT5O",
+                VirtualIpv4: "10.126.126.3",
+                LanIpv4: "10.244.155.185",
+                LanIpv6: null,
+                SunshineReady: true,
+                SunshinePort: 47989,
+                AgentPort: 47999,
+                SecurityPinRequired: false,
+                GpuEncoder: "NVENC",
+                OsVersion: "Windows",
+                LastSeenAtUtc: 0,
+                IsOnline: true);
+
+            // When peer is absent from EasyTier, LanIpv4 comes first, then VirtualIpv4.
+            var absentCandidates = TargetHostResolver.BuildCandidates(device, [new EasyTierPeerInfo("LAPTOP", "10.126.126.2", "本机", null, "", IsSelf: true)]);
+            Equal("10.244.155.185:True|10.126.126.3:False", string.Join('|', absentCandidates.Select(c => $"{c.Host}:{c.IsLanFallback}")));
+
+            // When peer is present in EasyTier, VirtualIpv4 comes first, then LanIpv4.
+            var presentCandidates = TargetHostResolver.BuildCandidates(device, [
+                new EasyTierPeerInfo("LAPTOP", "10.126.126.2", "本机", null, "", IsSelf: true),
+                new EasyTierPeerInfo("DESKTOP-PB9FT5O", "10.126.126.3", "直连 (P2P)", 3.2, "udp", IsSelf: false),
+            ]);
+            Equal("10.126.126.3:False|10.244.155.185:True", string.Join('|', presentCandidates.Select(c => $"{c.Host}:{c.IsLanFallback}")));
+
+            // Filters loopback and APIPA addresses.
+            var filtered = TargetHostResolver.BuildCandidates(device with { VirtualIpv4 = "127.0.0.1", LanIpv4 = "169.254.10.20" }, null);
+            Equal(0, filtered.Count);
+        }),
+
+        ("TargetHostResolver.ResolveAsync handles LAN fallback, DeviceKey verification, VirtualIpv4 preference, and mesh diagnostics", () =>
+        {
+            var device = new SyncedDeviceInfo(
+                Id: "id-1",
+                DeviceKey: "dev-dorm-key",
+                Name: "DESKTOP-PB9FT5O",
+                Hostname: "DESKTOP-PB9FT5O",
+                VirtualIpv4: "10.126.126.3",
+                LanIpv4: "10.244.155.185",
+                LanIpv6: null,
+                SunshineReady: true,
+                SunshinePort: 47989,
+                AgentPort: 47999,
+                SecurityPinRequired: false,
+                GpuEncoder: "NVENC",
+                OsVersion: "Windows",
+                LastSeenAtUtc: 0,
+                IsOnline: true);
+
+            // 1. VirtualIpv4 fails (or peer absent), LanIpv4 succeeds with matching DeviceKey.
+            using (var client1 = new AgentPeerClient(new StubPeerHandler(host =>
+            {
+                if (host == "10.244.155.185")
+                    return (HttpStatusCode.OK, JsonSerializer.Serialize(new AgentPeerInfoDto("dev-dorm-key", "DESKTOP-PB9FT5O", true, 47989, false)));
+                throw new HttpRequestException("unreachable");
+            })))
+            {
+                var res = TargetHostResolver.ResolveAsync(device, [], 47999, "auth-key", client1).GetAwaiter().GetResult();
+                Equal(true, res.Succeeded);
+                Equal("10.244.155.185", res.ResolvedHost);
+                Equal(true, res.UsedLanFallback);
+                Equal("10.244.155.185", string.Join('|', res.TriedHosts));
+            }
+
+            // 2. VirtualIpv4 is in EasyTier peers, VirtualIpv4 times out/fails, falls back to LanIpv4.
+            var peersWithDorm = new[] { new EasyTierPeerInfo("DESKTOP-PB9FT5O", "10.126.126.3", "中继 (Relay)", 25.0, "tcp", IsSelf: false) };
+            using (var client2 = new AgentPeerClient(new StubPeerHandler(host =>
+            {
+                if (host == "10.126.126.3")
+                    throw new HttpRequestException("virtual timeout");
+                return (HttpStatusCode.OK, JsonSerializer.Serialize(new AgentPeerInfoDto("dev-dorm-key", "DESKTOP-PB9FT5O", true, 47989, false)));
+            })))
+            {
+                var res = TargetHostResolver.ResolveAsync(device, peersWithDorm, 47999, "auth-key", client2).GetAwaiter().GetResult();
+                Equal(true, res.Succeeded);
+                Equal("10.244.155.185", res.ResolvedHost);
+                Equal(true, res.UsedLanFallback);
+                Equal("10.126.126.3|10.244.155.185", string.Join('|', res.TriedHosts));
+            }
+
+            // 3. LanIpv4 returns a mismatched DeviceKey -> must reject LanIpv4!
+            using (var client3 = new AgentPeerClient(new StubPeerHandler(host =>
+            {
+                if (host == "10.244.155.185")
+                    return (HttpStatusCode.OK, JsonSerializer.Serialize(new AgentPeerInfoDto("other-pc-key", "WRONG-PC", true, 47989, false)));
+                throw new HttpRequestException("virtual unreachable");
+            })))
+            {
+                var res = TargetHostResolver.ResolveAsync(device, [], 47999, "auth-key", client3).GetAwaiter().GetResult();
+                Equal(false, res.Succeeded);
+                Equal<string?>(null, res.ResolvedHost);
+                Equal(true, res.FailureMessage!.Contains("11010", StringComparison.Ordinal));
+            }
+
+            // 4. VirtualIpv4 is reachable in EasyTier peers and succeeds -> prefers VirtualIpv4 without using LAN fallback.
+            using (var client4 = new AgentPeerClient(new StubPeerHandler(host =>
+            {
+                if (host == "10.126.126.3")
+                    return (HttpStatusCode.OK, JsonSerializer.Serialize(new AgentPeerInfoDto("dev-dorm-key", "DESKTOP-PB9FT5O", true, 47989, false)));
+                throw new InvalidOperationException("Should not probe LAN when VirtualIpv4 succeeded");
+            })))
+            {
+                var res = TargetHostResolver.ResolveAsync(device, peersWithDorm, 47999, "auth-key", client4).GetAwaiter().GetResult();
+                Equal(true, res.Succeeded);
+                Equal("10.126.126.3", res.ResolvedHost);
+                Equal(false, res.UsedLanFallback);
+            }
         }),
     ];
+
+    private sealed class StubPeerHandler(Func<string, (HttpStatusCode Status, string Json)> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var host = request.RequestUri?.Host ?? "";
+            var (status, json) = responder(host);
+            return Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
 
     private static void Equal<T>(T expected, T actual)
     {

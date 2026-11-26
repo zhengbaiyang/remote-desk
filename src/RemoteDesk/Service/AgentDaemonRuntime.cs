@@ -607,7 +607,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
         try
         {
             var validated = EasyTierConfig.Validate(etCfg);
-            var fingerprint = $"{coreExe}|{validated.NetworkName}|{validated.NetworkSecret}|{validated.PeerUrl}|{validated.AutoAssignIpv4}|{validated.VirtualIpv4}";
+            var fingerprint = $"{coreExe}|{validated.NetworkName}|{validated.NetworkSecret}|{validated.PeerUrl}|{validated.FallbackPeerUrl ?? ""}|{validated.AutoAssignIpv4}|{validated.VirtualIpv4}";
 
             if (forceRestart || (!string.Equals(fingerprint, _lastAppliedEasyTierFingerprint, StringComparison.Ordinal) && EasyTierManager.IsMeshRunning()))
             {
@@ -618,7 +618,7 @@ internal sealed class AgentDaemonRuntime : IDisposable
             if (!EasyTierManager.IsMeshRunning())
             {
                 if (EasyTierManager.StartMesh(coreExe, validated))
-                    Log($"Started EasyTier mesh ({validated.NetworkName}, staticIp={validated.VirtualIpv4 ?? "dhcp"}).");
+                    Log($"Started EasyTier mesh ({validated.NetworkName}, staticIp={validated.VirtualIpv4 ?? "dhcp"}, fallback={validated.FallbackPeerUrl ?? "none"}).");
                 else
                     _lastError = "EasyTier 进程启动失败。";
             }
