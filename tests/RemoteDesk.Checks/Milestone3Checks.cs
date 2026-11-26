@@ -1217,6 +1217,88 @@ internal static class Milestone3Checks
             var rel = api.ReleaseRemoteSessionAsync("https://sync.example.com:11020", "tok", "s-1", "dev-a", null).GetAwaiter().GetResult();
             Equal(true, rel.Ok);
         }),
+
+        ("SessionInputPolicy normalizes modifiers, formats 0x8000 Moonlight keycodes, and preserves OS Alt+Tab/Esc", () =>
+        {
+            // Wire format sets 0x8000 high bit and is idempotent on masked low byte.
+            Equal(unchecked((short)0x8041), SessionInputPolicy.ToMoonlightKeyCode('A'));
+            Equal(unchecked((short)0x8041), SessionInputPolicy.ToMoonlightKeyCode(SessionInputPolicy.ToMoonlightKeyCode('A')));
+            Equal(unchecked((short)0x800D), SessionInputPolicy.ToMoonlightKeyCode(0x0D));
+
+            // Generic modifier VKs map to left/right variants based on scanCode / extended bit.
+            Equal((short)SessionInputPolicy.VkLShift, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkShift, 0x2A, isExtended: false));
+            Equal((short)SessionInputPolicy.VkRShift, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkShift, 0x36, isExtended: false));
+            Equal((short)SessionInputPolicy.VkLControl, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkControl, 0x1D, isExtended: false));
+            Equal((short)SessionInputPolicy.VkRControl, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkControl, 0x1D, isExtended: true));
+            Equal((short)SessionInputPolicy.VkLMenu, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkMenu, 0x38, isExtended: false));
+            Equal((short)SessionInputPolicy.VkRMenu, SessionInputPolicy.NormalizeVirtualKey(SessionInputPolicy.VkMenu, 0x38, isExtended: true));
+
+            // Alt+Tab and Alt+Esc remain local OS escape keys.
+            Equal(true, SessionInputPolicy.IsLocalOsEscapeKey(SessionInputPolicy.VkTab, altDown: true));
+            Equal(true, SessionInputPolicy.IsLocalOsEscapeKey(SessionInputPolicy.VkEscape, altDown: true));
+            Equal(false, SessionInputPolicy.IsLocalOsEscapeKey(SessionInputPolicy.VkTab, altDown: false));
+            Equal(false, SessionInputPolicy.IsLocalOsEscapeKey('A', altDown: true));
+        }),
+
+        ("DeviceIdentityHelper identifies self hosts/peers, resolves aliases, classifies peers, and SettingsStore persists names", () =>
+        {
+            Equal("宿舍台式机", DeviceIdentityHelper.NormalizeDeviceName("  宿舍台式机  "));
+            Throws<ArgumentException>(() => DeviceIdentityHelper.NormalizeDeviceName("   "));
+            Throws<ArgumentException>(() => DeviceIdentityHelper.NormalizeDeviceName(new string('A', 41)));
+
+            Equal("自定义本机名", DeviceIdentityHelper.GetEffectiveLocalDeviceName("  自定义本机名 ", "HOST-PC"));
+            Equal("HOST-PC", DeviceIdentityHelper.GetEffectiveLocalDeviceName(null, "HOST-PC"));
+
+            var syncedSelf = new SyncedDeviceInfo("id-self", "dev-self", "OLD-NAME", "HOST-PC", "10.126.126.2", "192.168.1.10", null, true, 47989, 47999, false, "NVENC", "Windows", 1000, true);
+            var syncedOther = new SyncedDeviceInfo("id-other", "dev-other", "LAB-PC", "LAB-PC", "10.126.126.3", "192.168.1.20", null, true, 47989, 47999, false, "NVENC", "Windows", 1000, true);
+            var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["dev-other"] = "实验室主机",
+            };
+
+            Equal("我的电脑", DeviceIdentityHelper.ResolveSyncedDeviceDisplayName(syncedSelf, aliases, "dev-self", "我的电脑"));
+            Equal("实验室主机", DeviceIdentityHelper.ResolveSyncedDeviceDisplayName(syncedOther, aliases, "dev-self", "我的电脑"));
+
+            // IsLocalHostAddress
+            Equal(true, DeviceIdentityHelper.IsLocalHostAddress("127.0.0.1", "10.126.126.2", ["192.168.1.10"], [], "HOST-PC"));
+            Equal(true, DeviceIdentityHelper.IsLocalHostAddress("10.126.126.2", "10.126.126.2", ["192.168.1.10"], [], "HOST-PC"));
+            Equal(true, DeviceIdentityHelper.IsLocalHostAddress("192.168.1.10", "10.126.126.2", ["192.168.1.10"], [], "HOST-PC"));
+            Equal(false, DeviceIdentityHelper.IsLocalHostAddress("10.126.126.3", "10.126.126.2", ["192.168.1.10"], [], "HOST-PC"));
+
+            // IsLocalPeer + ClassifyPeer
+            var selfPeer = new EasyTierPeerInfo("HOST-PC", "10.126.126.2", EasyTierManager.ConnectionTypeP2P, null, null, false);
+            Equal(true, DeviceIdentityHelper.IsLocalPeer(selfPeer, "10.126.126.2", "10.126.126.2", "HOST-PC"));
+            Equal(PeerAddState.IsSelf, DeviceIdentityHelper.ClassifyPeer(selfPeer, isSelf: true, [syncedSelf, syncedOther], []).State);
+
+            var relayPeer = new EasyTierPeerInfo("aliyun-relay", "", EasyTierManager.ConnectionTypeRelay, 25, "TCP", false);
+            Equal(PeerAddState.RelayOnly, DeviceIdentityHelper.ClassifyPeer(relayPeer, isSelf: false, [syncedSelf, syncedOther], []).State);
+
+            var syncedPeer = new EasyTierPeerInfo("LAB-PC", "10.126.126.3", EasyTierManager.ConnectionTypeP2P, 8.2, "UDP", false);
+            var syncedCls = DeviceIdentityHelper.ClassifyPeer(syncedPeer, isSelf: false, [syncedSelf, syncedOther], []);
+            Equal(PeerAddState.AlreadySynced, syncedCls.State);
+            Equal("cloud:id-other", syncedCls.ExistingDeviceUniqueKey);
+
+            var localProfile = DeviceProfile.Create("手工机", "10.126.126.9");
+            var localPeer = new EasyTierPeerInfo("MANUAL", "10.126.126.9", EasyTierManager.ConnectionTypeP2P, 12.1, "UDP", false);
+            var localCls = DeviceIdentityHelper.ClassifyPeer(localPeer, isSelf: false, [syncedSelf, syncedOther], [localProfile]);
+            Equal(PeerAddState.AlreadyLocal, localCls.State);
+            Equal("local:手工机:10.126.126.9", localCls.ExistingDeviceUniqueKey);
+
+            var freshPeer = new EasyTierPeerInfo("NEW-BOX", "10.126.126.15", EasyTierManager.ConnectionTypeP2P, 10.0, "UDP", false);
+            Equal(PeerAddState.CanAdd, DeviceIdentityHelper.ClassifyPeer(freshPeer, isSelf: false, [syncedSelf, syncedOther], [localProfile]).State);
+
+            // SettingsStore round-trips LocalDeviceName and DeviceAliases.
+            var cfgPath = Path.Combine(tempRoot, "identity-settings-" + Guid.NewGuid().ToString("N"), "settings.json");
+            var store = new SettingsStore(cfgPath);
+            store.Save(new AppSettings
+            {
+                LocalDeviceName = "主机-Alpha",
+                DeviceAliases = aliases,
+            });
+            var reloaded = new SettingsStore(cfgPath).Load();
+            Equal("主机-Alpha", reloaded.LocalDeviceName);
+            Equal("实验室主机", reloaded.DeviceAliases?["dev-other"]);
+        }),
     ];
 
     private sealed class DelegateHttpHandler(

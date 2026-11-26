@@ -381,7 +381,7 @@ class SyncDatabase:
                 self._conn.execute("BEGIN IMMEDIATE")
                 existing = self._conn.execute(
                     """
-                    SELECT id, virtual_ipv4
+                    SELECT id, virtual_ipv4, name
                     FROM devices
                     WHERE user_id = ? AND device_key = ?
                     """,
@@ -390,6 +390,7 @@ class SyncDatabase:
 
                 if existing is not None:
                     device_id = str(existing["id"])
+                    effective_name = str(existing["name"]).strip() or name
                     self._conn.execute(
                         """
                         UPDATE devices
@@ -400,7 +401,7 @@ class SyncDatabase:
                         WHERE id = ? AND user_id = ?
                         """,
                         (
-                            name,
+                            effective_name,
                             hostname,
                             lan_ipv4,
                             lan_ipv6,

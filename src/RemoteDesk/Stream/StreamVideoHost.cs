@@ -34,9 +34,19 @@ internal sealed class StreamVideoHost : HwndHost
     private ControlInputMode _inputMode = ControlInputMode.OfficeFreePointer;
 
     public IntPtr ChildHwnd => _hwnd;
+    public bool HasVideoFocus => _hwnd != IntPtr.Zero && GetFocus() == _hwnd;
     public NativeStreamSession? Session { get; set; }
     public ControlInputMode InputMode => _inputMode;
     public bool IsPointerLocked => _isPointerLocked;
+
+    public void FocusVideoSurface()
+    {
+        if (_hwnd != IntPtr.Zero)
+            SetFocus(_hwnd);
+    }
+
+    public bool HandleHostWindowKeyMessage(uint msg, IntPtr wParam, IntPtr lParam) =>
+        HandleKeyMessage(msg, wParam, lParam);
 
     public event Action<ControlInputMode, bool, string?>? InputModeChanged;
     public event Action? FullscreenToggleRequested;
@@ -127,6 +137,7 @@ internal sealed class StreamVideoHost : HwndHost
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException($"创建原生视频渲染宿主窗口失败（Win32 错误 {Marshal.GetLastWin32Error()}）。");
 
+        ImmAssociateContext(_hwnd, IntPtr.Zero);
         DragAcceptFiles(_hwnd, true);
         _topLevelHwnd = GetAncestor(_hwnd, GA_ROOT);
         return new HandleRef(this, _hwnd);
@@ -369,15 +380,25 @@ internal sealed class StreamVideoHost : HwndHost
 
     private bool HandleKeyMessage(uint msg, IntPtr wParam, IntPtr lParam)
     {
-        var vk = (short)(wParam.ToInt64() & 0xFFFF);
+        var rawVk = (int)(wParam.ToInt64() & 0xFFFF);
+        var lParam64 = lParam.ToInt64();
+        var scanCode = (uint)((lParam64 >> 16) & 0xFF);
+        var isExtended = ((lParam64 >> 24) & 1) != 0;
         var isDown = msg is WM_KEYDOWN or WM_SYSKEYDOWN;
-        var isExtended = ((lParam.ToInt64() >> 24) & 1) != 0;
+
+        if (rawVk == SessionInputPolicy.VkProcessKey)
+        {
+            var mappedVk = (int)MapVirtualKey(scanCode, MAPVK_VSC_TO_VK_EX);
+            if (mappedVk == 0)
+                return false;
+            rawVk = mappedVk;
+        }
 
         var ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         var altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
         var shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
-        var action = SessionInputPolicy.ResolveShortcut(vk, isDown, ctrlDown, altDown, shiftDown, _isPointerLocked);
+        var action = SessionInputPolicy.ResolveShortcut(rawVk, isDown, ctrlDown, altDown, shiftDown, _isPointerLocked);
         if (action != SessionShortcutAction.None)
         {
             if (action == SessionShortcutAction.ReleasePointerLock)
@@ -386,10 +407,14 @@ internal sealed class StreamVideoHost : HwndHost
             return true;
         }
 
-        if (!isDown && vk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
+        if (SessionInputPolicy.IsLocalOsEscapeKey(rawVk, altDown))
+            return false;
+
+        if (!isDown && rawVk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
             return true;
 
-        SendKeyToRemote(vk, isDown, isExtended);
+        var normalizedVk = SessionInputPolicy.NormalizeVirtualKey(rawVk, scanCode, isExtended);
+        SendKeyToRemote(normalizedVk, isDown, isExtended);
         return true;
     }
 
@@ -458,10 +483,13 @@ internal sealed class StreamVideoHost : HwndHost
         if (Session is null)
             return;
 
-        Session.SendKeyEvent(VK_CONTROL, NativeStreamBridge.KeyUp, 0);
-        Session.SendKeyEvent(VK_MENU, NativeStreamBridge.KeyUp, 0);
-        Session.SendKeyEvent(VK_SHIFT, NativeStreamBridge.KeyUp, 0);
-        Session.SendKeyEvent(VK_LWIN, NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LCONTROL), NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_RCONTROL), NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LMENU), NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_RMENU), NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LSHIFT), NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_RSHIFT), NativeStreamBridge.KeyUp, 0);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LWIN), NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
     }
 
     private void SendKeyToRemote(short vk, bool isDown, bool isExtended)
@@ -477,7 +505,8 @@ internal sealed class StreamVideoHost : HwndHost
             mods |= NativeStreamBridge.ModMeta;
         if (isExtended) mods |= NativeStreamBridge.ModExtended;
 
-        Session.SendKeyEvent(vk, isDown ? NativeStreamBridge.KeyDown : NativeStreamBridge.KeyUp, mods);
+        var wireVk = SessionInputPolicy.ToMoonlightKeyCode(vk);
+        Session.SendKeyEvent(wireVk, isDown ? NativeStreamBridge.KeyDown : NativeStreamBridge.KeyUp, mods);
     }
 
     private void ProcessRawMouseInput(IntPtr hRawInput)
@@ -672,7 +701,8 @@ internal sealed class StreamVideoHost : HwndHost
 
             if (SessionInputPolicy.ShouldForwardSystemKeyToRemote(vk, altDown, _isPointerLocked))
             {
-                SendKeyToRemote(vk, !isUp, isExtended);
+                var normalizedVk = SessionInputPolicy.NormalizeVirtualKey(vk, kb.scanCode, isExtended);
+                SendKeyToRemote(normalizedVk, !isUp, isExtended);
                 return (IntPtr)1;
             }
         }
@@ -748,6 +778,8 @@ internal sealed class StreamVideoHost : HwndHost
     private const uint RIM_TYPEMOUSE = 0;
     private const ushort MOUSE_MOVE_ABSOLUTE = 0x01;
 
+    private const uint MAPVK_VSC_TO_VK_EX = 3;
+
     private const int VK_TAB = 0x09;
     private const int VK_SHIFT = 0x10;
     private const int VK_CONTROL = 0x11;
@@ -757,6 +789,8 @@ internal sealed class StreamVideoHost : HwndHost
     private const int VK_RWIN = 0x5C;
     private const int VK_APPS = 0x5D;
     private const int VK_F11 = 0x7A;
+    private const int VK_LSHIFT = 0xA0;
+    private const int VK_RSHIFT = 0xA1;
     private const int VK_LCONTROL = 0xA2;
     private const int VK_RCONTROL = 0xA3;
     private const int VK_LMENU = 0xA4;
@@ -929,6 +963,12 @@ internal sealed class StreamVideoHost : HwndHost
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern uint DragQueryFileW(IntPtr hDrop, uint iFile, StringBuilder? lpszFile, uint cch);
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
 
     [DllImport("shell32.dll")]
     private static extern void DragFinish(IntPtr hDrop);

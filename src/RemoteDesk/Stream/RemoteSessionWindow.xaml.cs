@@ -137,11 +137,19 @@ public partial class RemoteSessionWindow : Window
         _sessionHeartbeatTimer.Tick += async (_, _) => await HeartbeatSessionLocksAsync();
         _powerConfirmResetTimer.Tick += (_, _) => ResetPowerConfirmButtons();
 
+        InputMethod.SetIsInputMethodEnabled(this, false);
+        InputMethod.SetIsInputMethodSuspended(this, true);
+
         PreviewKeyDown += OnWindowPreviewKeyDown;
         Loaded += OnWindowLoaded;
         LocationChanged += (_, _) => SyncOverlayBounds();
         SizeChanged += (_, _) => SyncOverlayBounds();
         StateChanged += OnWindowStateChanged;
+        Activated += (_, _) =>
+        {
+            if (_activeMenuCount == 0 && !_isClosing)
+                VideoHost.FocusVideoSurface();
+        };
         Deactivated += (_, _) => VideoHost.ReleaseCaptureForDeactivation();
         Closing += OnWindowClosing;
     }
@@ -206,21 +214,41 @@ public partial class RemoteSessionWindow : Window
         _overlay.SetPrivacyEnabled(_privacyEnabled);
         _overlay.PreviewKeyDown += OnWindowPreviewKeyDown;
 
-        _overlay.InputModeRequested += mode => VideoHost.SetInputMode(
-            mode,
-            mode == ControlInputMode.GameRelativeLock
-                ? "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放"
-                : "已切换回办公自由指针模式",
-            lockImmediately: false);
+        _overlay.InputModeRequested += mode =>
+        {
+            VideoHost.SetInputMode(
+                mode,
+                mode == ControlInputMode.GameRelativeLock
+                    ? "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放"
+                    : "已切换回办公自由指针模式",
+                lockImmediately: false);
+            Activate();
+            VideoHost.FocusVideoSurface();
+        };
         _overlay.QualityMenuRequested += target => OpenQualityPopup(target);
         _overlay.HotkeysMenuRequested += target => OpenHotkeysPopup(target);
         _overlay.HelpMenuRequested += target => OpenHelpPopup(target);
         _overlay.FileUploadRequested += () => OpenUploadDialogAndSend();
-        _overlay.ClipboardSyncToggleRequested += ToggleClipboardSync;
+        _overlay.ClipboardSyncToggleRequested += () =>
+        {
+            ToggleClipboardSync();
+            Activate();
+            VideoHost.FocusVideoSurface();
+        };
         _overlay.PrivacyToggleRequested += () => _ = TogglePrivacyAsync();
         _overlay.FilesDropped += paths => _ = UploadFilesAsync(paths);
-        _overlay.MuteToggleRequested += ToggleMute;
-        _overlay.TelemetryHudToggleRequested += ToggleHud;
+        _overlay.MuteToggleRequested += () =>
+        {
+            ToggleMute();
+            Activate();
+            VideoHost.FocusVideoSurface();
+        };
+        _overlay.TelemetryHudToggleRequested += () =>
+        {
+            ToggleHud();
+            Activate();
+            VideoHost.FocusVideoSurface();
+        };
         _overlay.ExitFullscreenRequested += () =>
         {
             if (_isFullscreen)
@@ -521,6 +549,7 @@ public partial class RemoteSessionWindow : Window
                 ToolbarStatusDot.Fill = (Brush)FindResource("ReadyBrush");
                 MiniStatsText.Text = "已连接 · 等待首帧…";
                 _overlay?.HideStatusCard();
+                VideoHost.FocusVideoSurface();
                 _overlay?.ShowToast(
                     VideoHost.InputMode == ControlInputMode.GameRelativeLock
                         ? "已进入游戏锁定模式 · 按 Ctrl+Alt 释放光标"
@@ -587,6 +616,18 @@ public partial class RemoteSessionWindow : Window
             _hasConnectedOnce)
         {
             _ = PushLocalClipboardAsync();
+        }
+        else if (msg is 0x0100 or 0x0101 or 0x0104 or 0x0105 &&
+                 !_isClosing &&
+                 _activeMenuCount == 0 &&
+                 VideoHost.Session is not null &&
+                 !VideoHost.HasVideoFocus &&
+                 Keyboard.FocusedElement is not TextBoxBase and not PasswordBox and not ComboBox)
+        {
+            if (msg is 0x0100 or 0x0104)
+                VideoHost.FocusVideoSurface();
+            if (VideoHost.HandleHostWindowKeyMessage((uint)msg, wParam, lParam))
+                handled = true;
         }
         return IntPtr.Zero;
     }
@@ -924,6 +965,7 @@ public partial class RemoteSessionWindow : Window
             _overlay?.SetFullscreenState(false);
             SyncOverlayBounds();
         }
+        VideoHost.FocusVideoSurface();
     }
 
     private void ToggleMute()
@@ -1044,20 +1086,26 @@ public partial class RemoteSessionWindow : Window
         }
     }
 
-    private void OfficeModeClicked(object sender, RoutedEventArgs e) =>
+    private void OfficeModeClicked(object sender, RoutedEventArgs e)
+    {
         VideoHost.SetInputMode(ControlInputMode.OfficeFreePointer, "已切换到办公自由指针模式", lockImmediately: false);
+        VideoHost.FocusVideoSurface();
+    }
 
-    private void GameModeClicked(object sender, RoutedEventArgs e) =>
+    private void GameModeClicked(object sender, RoutedEventArgs e)
+    {
         VideoHost.SetInputMode(ControlInputMode.GameRelativeLock, "游戏锁定已就绪：点击画面锁鼠，按 Ctrl+Alt 随时释放", lockImmediately: false);
+        VideoHost.FocusVideoSurface();
+    }
 
-    private void ToggleHudClicked(object sender, RoutedEventArgs e) => ToggleHud();
+    private void ToggleHudClicked(object sender, RoutedEventArgs e) { ToggleHud(); VideoHost.FocusVideoSurface(); }
     private void QualityBtnClicked(object sender, RoutedEventArgs e) => OpenQualityPopup(QualityBtn);
     private void UploadFilesBtnClicked(object sender, RoutedEventArgs e) => OpenUploadDialogAndSend();
-    private void ClipboardSyncBtnClicked(object sender, RoutedEventArgs e) => ToggleClipboardSync();
-    private async void PrivacyBtnClicked(object sender, RoutedEventArgs e) => await TogglePrivacyAsync();
+    private void ClipboardSyncBtnClicked(object sender, RoutedEventArgs e) { ToggleClipboardSync(); VideoHost.FocusVideoSurface(); }
+    private async void PrivacyBtnClicked(object sender, RoutedEventArgs e) { await TogglePrivacyAsync(); VideoHost.FocusVideoSurface(); }
     private void HotkeysBtnClicked(object sender, RoutedEventArgs e) => OpenHotkeysPopup(HotkeysBtn);
     private void HelpBtnClicked(object sender, RoutedEventArgs e) => ToggleHelpPopup();
-    private void MuteBtnClicked(object sender, RoutedEventArgs e) => ToggleMute();
+    private void MuteBtnClicked(object sender, RoutedEventArgs e) { ToggleMute(); VideoHost.FocusVideoSurface(); }
     private void FullscreenBtnClicked(object sender, RoutedEventArgs e) => ToggleFullscreen();
     private void DisconnectBtnClicked(object sender, RoutedEventArgs e) => Close();
 
@@ -1075,6 +1123,8 @@ public partial class RemoteSessionWindow : Window
             _overlay.IsExternalPopupOpen = false;
         if (ReferenceEquals(sender, HotkeysPopup))
             ResetPowerConfirmButtons();
+        if (_activeMenuCount == 0 && !_isClosing)
+            VideoHost.FocusVideoSurface();
     }
 
     private void AutoMatchResCheckChanged(object sender, RoutedEventArgs e)
@@ -1165,6 +1215,7 @@ public partial class RemoteSessionWindow : Window
         {
             _activeSession?.SendHotkey(hotkeyId);
             HotkeysPopup.IsOpen = false;
+            VideoHost.FocusVideoSurface();
             _overlay?.ShowToast($"已向远程主机发送 {btn.Content}");
         }
     }

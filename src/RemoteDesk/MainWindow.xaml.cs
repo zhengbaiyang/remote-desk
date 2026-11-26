@@ -31,13 +31,14 @@ internal sealed record DeviceListItem(
     bool IsControllingOther = false,
     bool IsControlledByLocal = false,
     string? ControlledByName = null,
-    string? ControllingTargetName = null)
+    string? ControllingTargetName = null,
+    bool IsLocalDevice = false)
 {
     public string UniqueKey => SyncedDevice is not null
         ? $"cloud:{SyncedDevice.Id}"
-        : $"local:{Name}:{HostAddress}";
+        : (LocalProfile is null && IsLocalDevice ? "local-self" : $"local:{Name}:{HostAddress}");
 
-    public bool SupportsStream => !string.IsNullOrWhiteSpace(HostAddress);
+    public bool SupportsStream => !IsLocalDevice && !string.IsNullOrWhiteSpace(HostAddress);
 
     public bool IsBlockedByRemoteControl => (IsBeingControlled && !IsControlledByLocal) || IsControllingOther;
 
@@ -56,32 +57,78 @@ internal sealed record DeviceListItem(
             : DeviceProfile.Create(Name, effectiveHost, Stream, StreamAppName);
     }
 
-    public static DeviceListItem FromProfile(DeviceProfile profile, bool isControlledByLocal = false) =>
+    public static DeviceListItem FromLocalSelf(
+        string displayName,
+        string? primaryAddress,
+        StreamOptions defaultStream) =>
+        new(
+            LocalProfile: null,
+            Name: displayName,
+            HostAddress: primaryAddress,
+            Stream: defaultStream,
+            StreamAppName: DeviceProfile.DefaultStreamAppName,
+            TargetSubtitle: !string.IsNullOrWhiteSpace(primaryAddress) ? $"{primaryAddress} · 本机（当前电脑）" : "当前电脑（未组网）",
+            ModeBadgeText: "本机",
+            IsCloudSynced: false,
+            IsOnline: true,
+            SyncedDevice: null,
+            IsLocalDevice: true);
+
+    public static DeviceListItem FromProfile(
+        DeviceProfile profile,
+        bool isControlledByLocal = false,
+        bool isLocalDevice = false) =>
         new(
             LocalProfile: profile,
             Name: profile.Name,
             HostAddress: profile.HostAddress,
             Stream: profile.Stream,
             StreamAppName: profile.StreamAppName,
-            TargetSubtitle: isControlledByLocal ? $"{profile.HostAddress} · 被远控（本机）" : profile.HostAddress,
-            ModeBadgeText: isControlledByLocal ? "被远控" : "高刷",
+            TargetSubtitle: isLocalDevice
+                ? $"{profile.HostAddress} · 本机"
+                : (isControlledByLocal ? $"{profile.HostAddress} · 被远控（本机）" : profile.HostAddress),
+            ModeBadgeText: isLocalDevice ? "本机" : (isControlledByLocal ? "被远控" : "高刷"),
             IsCloudSynced: false,
             IsOnline: true,
             SyncedDevice: null,
             IsBeingControlled: isControlledByLocal,
             IsControllingOther: false,
             IsControlledByLocal: isControlledByLocal,
-            ControlledByName: isControlledByLocal ? "本机" : null);
+            ControlledByName: isControlledByLocal ? "本机" : null,
+            IsLocalDevice: isLocalDevice);
 
     public static DeviceListItem FromSyncedDevice(
         SyncedDeviceInfo synced,
         StreamOptions defaultStream,
         string localDeviceKey = "",
-        bool isControlledByLocal = false)
+        bool isControlledByLocal = false,
+        string? displayNameOverride = null,
+        bool isLocalDevice = false)
     {
+        var displayName = !string.IsNullOrWhiteSpace(displayNameOverride)
+            ? displayNameOverride.Trim()
+            : synced.Name;
         var preferredHost = !string.IsNullOrWhiteSpace(synced.VirtualIpv4)
             ? synced.VirtualIpv4
             : synced.LanIpv4;
+
+        if (isLocalDevice)
+        {
+            var selfSubtitle = $"{preferredHost ?? "待分配 IP"} · 本机（当前电脑）";
+            return new DeviceListItem(
+                LocalProfile: null,
+                Name: displayName,
+                HostAddress: preferredHost,
+                Stream: defaultStream,
+                StreamAppName: DeviceProfile.DefaultStreamAppName,
+                TargetSubtitle: selfSubtitle,
+                ModeBadgeText: "本机",
+                IsCloudSynced: true,
+                IsOnline: true,
+                SyncedDevice: synced,
+                IsLocalDevice: true);
+        }
+
         var status = RemoteControlLockPolicy.ParseStatus(synced.RemoteControlState);
         var isBeingControlled = isControlledByLocal || status == DeviceRemoteControlStatus.BeingControlled;
         var isControllingOther = !isBeingControlled && status == DeviceRemoteControlStatus.Controlling;
@@ -117,7 +164,7 @@ internal sealed record DeviceListItem(
 
         return new DeviceListItem(
             LocalProfile: null,
-            Name: synced.Name,
+            Name: displayName,
             HostAddress: preferredHost,
             Stream: defaultStream,
             StreamAppName: DeviceProfile.DefaultStreamAppName,
@@ -130,7 +177,8 @@ internal sealed record DeviceListItem(
             IsControllingOther: isControllingOther,
             IsControlledByLocal: controlledByLocal,
             ControlledByName: controlledByLocal ? "本机" : synced.ControlledByDeviceName,
-            ControllingTargetName: synced.ControllingTargetDeviceName);
+            ControllingTargetName: synced.ControllingTargetDeviceName,
+            IsLocalDevice: false);
     }
 }
 
@@ -152,12 +200,14 @@ public partial class MainWindow : Window
     private LocalHostPeerHost? localHostPeerHost;
     private AppSettings settings = new();
     private DeviceProfile? editingDevice;
+    private string? previousSelectedUniqueKeyBeforeAdd;
     private AppPage currentPage = AppPage.Remote;
     private bool isSyncingThemeToggle;
     private bool isSyncingStreamUi;
     private bool isDraggingBitrate;
     private bool isSyncingHostToggle;
     private bool isRefreshingDevices;
+    private bool isRenamingDevice;
 
     private DeviceListItem? SelectedListItem => DeviceList.SelectedItem as DeviceListItem;
 
@@ -188,6 +238,7 @@ public partial class MainWindow : Window
         InitializeNetwork();
         InitializeUpdates();
         RefreshDevices(0);
+        RefreshLocalIdentityBadges();
         RefreshAllEngines();
         RefreshHostAndNetworkInfo();
 
@@ -362,14 +413,19 @@ public partial class MainWindow : Window
             device: null,
             prefillName: hostname,
             prefillHostAddress: virtualIpv4);
-        ShowEditorMessage($"已从 EasyTier 节点预填主机名与虚拟 IP（{virtualIpv4}），确认后点击「保存电脑」即可发起高刷串流。");
+        ShowEditorMessage($"已从检测到的新节点预填名称与虚拟 IP（{virtualIpv4}），确认后点击「新增并保存」即可加入设备列表。");
     }
 
     private void EditDevice(object sender, RoutedEventArgs e)
     {
         if (SelectedListItem is { IsCloudSynced: true } cloudItem)
         {
-            ShowStatus($"「{cloudItem.Name}」由账号云同步自动管理，无需手动编辑地址。");
+            ShowStatus($"「{cloudItem.Name}」由账号云同步自动管理，如需修改显示名称请点击「重命名」。");
+            return;
+        }
+        if (SelectedListItem is { IsLocalDevice: true, LocalProfile: null })
+        {
+            BeginRenameDeviceClicked(sender, e);
             return;
         }
         OpenEditor(SelectedListItem?.LocalProfile);
@@ -381,8 +437,33 @@ public partial class MainWindow : Window
         string? prefillHostAddress = null)
     {
         editingDevice = device;
-        RemoveButton.Visibility = device is null ? Visibility.Collapsed : Visibility.Visible;
-        EditorTitle.Text = device is null ? "添加电脑" : "编辑电脑";
+        InlineRenamePanel.Visibility = Visibility.Collapsed;
+        RenameDeviceFeedback.Visibility = Visibility.Collapsed;
+
+        if (device is null)
+        {
+            previousSelectedUniqueKeyBeforeAdd = SelectedListItem?.UniqueKey;
+            isRefreshingDevices = true;
+            try
+            {
+                DeviceList.SelectedIndex = -1;
+            }
+            finally
+            {
+                isRefreshingDevices = false;
+            }
+            RemoveButton.Visibility = Visibility.Collapsed;
+            EditorTitle.Text = !string.IsNullOrWhiteSpace(prefillHostAddress) ? "新增检测到的设备" : "添加电脑";
+            SaveDeviceButton.Content = !string.IsNullOrWhiteSpace(prefillHostAddress) ? "新增并保存" : "保存电脑";
+        }
+        else
+        {
+            previousSelectedUniqueKeyBeforeAdd = null;
+            RemoveButton.Visibility = Visibility.Visible;
+            EditorTitle.Text = "编辑电脑";
+            SaveDeviceButton.Content = "保存修改";
+        }
+
         NameInput.Text = device?.Name ?? prefillName ?? "";
         HostAddressInput.Text = device?.HostAddress ?? prefillHostAddress ?? "";
         StreamAppNameInput.Text = device?.StreamAppName ?? DeviceProfile.DefaultStreamAppName;
@@ -399,6 +480,36 @@ public partial class MainWindow : Window
 
     private void CancelEdit(object sender, RoutedEventArgs e)
     {
+        if (SelectedListItem is null && DeviceList.Items.Count > 0)
+        {
+            var items = DeviceList.ItemsSource as IList<DeviceListItem>;
+            var restoreIndex = 0;
+            if (!string.IsNullOrEmpty(previousSelectedUniqueKeyBeforeAdd) && items is not null)
+            {
+                var found = -1;
+                for (var i = 0; i < items.Count; i++)
+                {
+                    if (string.Equals(items[i].UniqueKey, previousSelectedUniqueKeyBeforeAdd, StringComparison.Ordinal))
+                    {
+                        found = i;
+                        break;
+                    }
+                }
+                if (found >= 0)
+                    restoreIndex = found;
+            }
+
+            isRefreshingDevices = true;
+            try
+            {
+                DeviceList.SelectedIndex = Math.Clamp(restoreIndex, 0, DeviceList.Items.Count - 1);
+            }
+            finally
+            {
+                isRefreshingDevices = false;
+            }
+        }
+        previousSelectedUniqueKeyBeforeAdd = null;
         ShowDevice();
         FocusDeviceAction();
     }
@@ -457,6 +568,39 @@ public partial class MainWindow : Window
                 streamOptions,
                 appName);
 
+            var localKey = EnsureLocalDeviceKeyPersisted();
+            var netInfo = HostServiceManager.GetLocalNetworkInfo();
+            var localVirtualIp = currentEasyTierVirtualIpv4 ?? settings.Account?.AssignedVirtualIpv4;
+            if (editingDevice is null &&
+                DeviceIdentityHelper.IsLocalHostAddress(
+                    device.HostAddress,
+                    localVirtualIp,
+                    netInfo.IPv4Addresses,
+                    netInfo.IPv6Addresses,
+                    netInfo.HostName))
+            {
+                ShowEditorMessage("该地址属于当前本机，无需添加为远程控制目标。", warning: true);
+                HostAddressInput.Focus();
+                return;
+            }
+
+            if (editingDevice is null &&
+                string.Equals(device.StreamAppName, DeviceProfile.DefaultStreamAppName, StringComparison.OrdinalIgnoreCase))
+            {
+                var existingCloud = syncedDevices.FirstOrDefault(s =>
+                    !string.Equals(s.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase) &&
+                    ((!string.IsNullOrWhiteSpace(s.VirtualIpv4) && string.Equals(s.VirtualIpv4, device.HostAddress, StringComparison.OrdinalIgnoreCase)) ||
+                     (!string.IsNullOrWhiteSpace(s.LanIpv4) && string.Equals(s.LanIpv4, device.HostAddress, StringComparison.OrdinalIgnoreCase))));
+                if (existingCloud is not null)
+                {
+                    var existingName = DeviceIdentityHelper.ResolveSyncedDeviceDisplayName(
+                        existingCloud, settings.DeviceAliases, localKey, settings.LocalDeviceName);
+                    ShowEditorMessage($"该地址（{device.HostAddress}）已在账号云同步设备「{existingName}」中，请直接在设备列表连接或重命名，无需重复新增。", warning: true);
+                    HostAddressInput.Focus();
+                    return;
+                }
+            }
+
             var devices = settings.Devices.ToList();
             if (devices.Any(existing =>
                 !ReferenceEquals(existing, editingDevice) &&
@@ -480,9 +624,10 @@ public partial class MainWindow : Window
                 devices[localIndex] = device;
             }
 
+            previousSelectedUniqueKeyBeforeAdd = null;
             SaveSettings(settings with { Devices = devices });
             RefreshDevices(0, DeviceListItem.FromProfile(device).UniqueKey);
-            ShowStatus($"已保存设备「{device.Name}」。");
+            ShowStatus(editingDevice is null ? $"已新增设备「{device.Name}」。" : $"已保存设备「{device.Name}」的修改。");
             FocusDeviceAction();
         }
         catch (ArgumentException error)
@@ -656,6 +801,12 @@ public partial class MainWindow : Window
         if (SelectedListItem is not { } item)
             return;
 
+        if (item.IsLocalDevice)
+        {
+            ShowStatus("当前设备为本机，无需远控自己。", warning: true);
+            return;
+        }
+
         var lockStatus = item.IsBeingControlled
             ? DeviceRemoteControlStatus.BeingControlled
             : (item.IsControllingOther ? DeviceRemoteControlStatus.Controlling : DeviceRemoteControlStatus.Idle);
@@ -690,6 +841,12 @@ public partial class MainWindow : Window
     {
         if (SelectedListItem is not { } item)
             return;
+
+        if (item.IsLocalDevice)
+        {
+            ShowStatus("当前设备为本机，无需配对本机。", warning: true);
+            return;
+        }
 
         var lockStatus = item.IsBeingControlled
             ? DeviceRemoteControlStatus.BeingControlled
@@ -775,41 +932,97 @@ public partial class MainWindow : Window
     {
         var items = new List<DeviceListItem>();
         var localKey = EnsureLocalDeviceKeyPersisted();
+        var localName = GetEffectiveLocalDeviceName();
+        var netInfo = HostServiceManager.GetLocalNetworkInfo();
+        var localVirtualIp = currentEasyTierVirtualIpv4 ?? settings.Account?.AssignedVirtualIpv4;
         var defaultStream = settings.DefaultStream ?? StreamOptions.FromPreset(StreamPresetKind.High2K);
         var cloudHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hasSelfItem = false;
 
         foreach (var synced in syncedDevices)
         {
-            if (string.Equals(synced.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase))
-                continue;
-
+            var isSelf = string.Equals(synced.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase);
             var preferredHost = !string.IsNullOrWhiteSpace(synced.VirtualIpv4)
                 ? synced.VirtualIpv4
                 : synced.LanIpv4;
-            var isLocalControlling = IsHostControlledByLocal(preferredHost, synced.DeviceKey) ||
-                (!string.IsNullOrWhiteSpace(synced.LanIpv4) && IsHostControlledByLocal(synced.LanIpv4, synced.DeviceKey));
+            var isLocalControlling = !isSelf &&
+                (IsHostControlledByLocal(preferredHost, synced.DeviceKey) ||
+                 (!string.IsNullOrWhiteSpace(synced.LanIpv4) && IsHostControlledByLocal(synced.LanIpv4, synced.DeviceKey)));
 
-            var cloudItem = DeviceListItem.FromSyncedDevice(synced, defaultStream, localKey, isLocalControlling);
-            items.Add(cloudItem);
+            var displayName = DeviceIdentityHelper.ResolveSyncedDeviceDisplayName(
+                synced,
+                settings.DeviceAliases,
+                localKey,
+                settings.LocalDeviceName);
+
+            var cloudItem = DeviceListItem.FromSyncedDevice(
+                synced,
+                defaultStream,
+                localKey,
+                isLocalControlling,
+                displayNameOverride: displayName,
+                isLocalDevice: isSelf);
+
+            if (isSelf)
+            {
+                items.Insert(0, cloudItem);
+                hasSelfItem = true;
+            }
+            else
+            {
+                items.Add(cloudItem);
+            }
+
             if (!string.IsNullOrWhiteSpace(synced.VirtualIpv4))
                 cloudHosts.Add(synced.VirtualIpv4);
         }
 
         foreach (var local in settings.Devices)
         {
-            if (!string.IsNullOrWhiteSpace(local.HostAddress) && cloudHosts.Contains(local.HostAddress))
+            if (!string.IsNullOrWhiteSpace(local.HostAddress) &&
+                cloudHosts.Contains(local.HostAddress) &&
+                string.Equals(local.StreamAppName, DeviceProfile.DefaultStreamAppName, StringComparison.OrdinalIgnoreCase))
+            {
                 continue;
-            items.Add(DeviceListItem.FromProfile(local, IsHostControlledByLocal(local.HostAddress, deviceKey: null)));
+            }
+
+            var isSelfHost = DeviceIdentityHelper.IsLocalHostAddress(
+                local.HostAddress,
+                localVirtualIp,
+                netInfo.IPv4Addresses,
+                netInfo.IPv6Addresses,
+                netInfo.HostName);
+            hasSelfItem |= isSelfHost;
+            items.Add(DeviceListItem.FromProfile(local, IsHostControlledByLocal(local.HostAddress, deviceKey: null), isLocalDevice: isSelfHost));
+        }
+
+        if (!hasSelfItem && items.Count > 0)
+        {
+            items.Insert(0, DeviceListItem.FromLocalSelf(
+                localName,
+                localVirtualIp ?? netInfo.IPv4Addresses.FirstOrDefault(),
+                defaultStream));
         }
 
         var resolvedIndex = -1;
         if (!string.IsNullOrEmpty(selectUniqueKey))
             resolvedIndex = items.FindIndex(i => string.Equals(i.UniqueKey, selectUniqueKey, StringComparison.Ordinal));
         if (resolvedIndex < 0 && items.Count > 0)
-            resolvedIndex = Math.Clamp(index, 0, items.Count - 1);
+        {
+            if (index == 0 && string.IsNullOrEmpty(selectUniqueKey))
+            {
+                var firstRemote = items.FindIndex(i => !i.IsLocalDevice);
+                resolvedIndex = firstRemote >= 0 ? firstRemote : 0;
+            }
+            else
+            {
+                resolvedIndex = Math.Clamp(index, 0, items.Count - 1);
+            }
+        }
 
         var keepEditorOrRemoval = preserveTransientUi &&
             (EditorView.Visibility == Visibility.Visible || RemovalView.Visibility == Visibility.Visible);
+        var keepInlineRename = preserveTransientUi && InlineRenamePanel.Visibility == Visibility.Visible;
         var keepSecurityPinCard = preserveTransientUi &&
             SecurityPinPromptCard.Visibility == Visibility.Visible &&
             pendingSecurityPinItem is { } savedPinItem &&
@@ -831,11 +1044,14 @@ public partial class MainWindow : Window
             isRefreshingDevices = false;
         }
 
+        RefreshLocalIdentityBadges();
+        RefreshEasyTierPeerViews();
+
         if (keepEditorOrRemoval)
             return;
 
         var preservedPinItem = keepSecurityPinCard ? pendingSecurityPinItem : null;
-        ShowDevice();
+        ShowDevice(keepInlineRename);
         if (preservedPinItem is not null && SecurityPinPromptCard is not null)
         {
             pendingSecurityPinItem = preservedPinItem;
@@ -860,13 +1076,18 @@ public partial class MainWindow : Window
         AddFromListButton.IsEnabled = enabled;
     }
 
-    private void ShowDevice()
+    private void ShowDevice(bool preserveInlineRename = false)
     {
         var item = SelectedListItem;
         editingDevice = null;
         pendingSecurityPinItem = null;
         if (SecurityPinPromptCard is not null)
             SecurityPinPromptCard.Visibility = Visibility.Collapsed;
+        if (!preserveInlineRename)
+        {
+            InlineRenamePanel.Visibility = Visibility.Collapsed;
+            RenameDeviceFeedback.Visibility = Visibility.Collapsed;
+        }
         SetDeviceListEnabled(true);
 
         EmptyView.Visibility = item is null ? Visibility.Visible : Visibility.Collapsed;
@@ -878,7 +1099,15 @@ public partial class MainWindow : Window
             return;
 
         DeviceNameText.Text = item.Name;
-        if (item.IsBeingControlled)
+        if (item.IsLocalDevice)
+        {
+            DeviceActiveModeText.Text = "本机（当前电脑）";
+            DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, "AccentSoft");
+            DeviceActiveModeText.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+            DeviceHostText.Text = item.HostAddress is not null ? $"本机地址 {item.HostAddress}" : "当前电脑（未组网）";
+            DeviceSecondaryText.Text = settings.HostModeEnabled ? "允许被其他设备控制" : "未开启被控";
+        }
+        else if (item.IsBeingControlled)
         {
             DeviceActiveModeText.Text = item.IsControlledByLocal ? "被远控（本机连接中）" : "被远控";
             DeviceActiveModeBadge.SetResourceReference(Border.BackgroundProperty, "WarningSoft");
@@ -926,9 +1155,20 @@ public partial class MainWindow : Window
         DeviceAppText.Text = $"应用 {item.StreamAppName}";
         DeviceAppPill.Visibility = Visibility.Visible;
 
+        RenameDeviceButton.Visibility = Visibility.Visible;
+        EditDeviceButton.Visibility = item.IsCloudSynced || (item.IsLocalDevice && item.LocalProfile is null)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
         SyncStreamControls(item.Stream, syncSliderValue: true);
 
-        if (item.IsBeingControlled && !item.IsControlledByLocal)
+        if (item.IsLocalDevice)
+        {
+            ConnectButtonText.Text = "当前为本机";
+            ConnectButton.IsEnabled = false;
+            PairButton.IsEnabled = false;
+        }
+        else if (item.IsBeingControlled && !item.IsControlledByLocal)
         {
             ConnectButtonText.Text = "设备正被远控";
             ConnectButton.IsEnabled = false;
@@ -954,10 +1194,12 @@ public partial class MainWindow : Window
         }
 
         ConnectButtonIcon.Text = "\uE945";
-        PairButton.Visibility = item.IsCloudSynced ? Visibility.Collapsed : Visibility.Visible;
-        ActionTargetSummary.Text = item.HostAddress is not null
-            ? $"目标 {item.HostAddress} · {item.StreamAppName}"
-            : "等待分配虚拟内网地址";
+        PairButton.Visibility = item.IsCloudSynced || item.IsLocalDevice ? Visibility.Collapsed : Visibility.Visible;
+        ActionTargetSummary.Text = item.IsLocalDevice
+            ? "当前为本机设备"
+            : (item.HostAddress is not null
+                ? $"目标 {item.HostAddress} · {item.StreamAppName}"
+                : "等待分配虚拟内网地址");
 
         UpdateDeviceActionEngineReadiness();
     }
@@ -1000,7 +1242,13 @@ public partial class MainWindow : Window
         if (SelectedListItem is not { } item)
             return;
 
-        if (item.IsBeingControlled && item.IsControlledByLocal)
+        if (item.IsLocalDevice)
+        {
+            ActionEngineDot.SetResourceReference(Shape.FillProperty, "Accent");
+            ActionEngineHint.Text = "当前为本机设备，不可远控自己；点击右上角「重命名」可修改本机显示名称。";
+            ActionEngineLink.Visibility = Visibility.Collapsed;
+        }
+        else if (item.IsBeingControlled && item.IsControlledByLocal)
         {
             ActionEngineDot.SetResourceReference(Shape.FillProperty, "Warning");
             ActionEngineHint.Text = "当前本机正在远控该设备，期间本机与目标设备均不可被其他设备远控。";
@@ -1040,6 +1288,242 @@ public partial class MainWindow : Window
                 : "内置原生高刷控屏引擎已就绪（D3D11 硬件解码）";
             ActionEngineLink.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private string GetEffectiveLocalDeviceName()
+    {
+        var osHost = HostServiceManager.GetLocalNetworkInfo().HostName;
+        return DeviceIdentityHelper.GetEffectiveLocalDeviceName(settings.LocalDeviceName, osHost);
+    }
+
+    private void RefreshLocalIdentityBadges()
+    {
+        var netInfo = HostServiceManager.GetLocalNetworkInfo();
+        var effectiveName = DeviceIdentityHelper.GetEffectiveLocalDeviceName(settings.LocalDeviceName, netInfo.HostName);
+        var ipText = currentEasyTierVirtualIpv4
+            ?? settings.Account?.AssignedVirtualIpv4
+            ?? netInfo.IPv4Addresses.FirstOrDefault()
+            ?? "当前电脑";
+
+        if (SidebarLocalDeviceNameText is not null)
+            SidebarLocalDeviceNameText.Text = effectiveName;
+        if (SidebarLocalDeviceIpText is not null)
+            SidebarLocalDeviceIpText.Text = ipText;
+        if (SidebarLocalIdentityCard is not null)
+            SidebarLocalIdentityCard.ToolTip = $"本机：{effectiveName}（主机名 {netInfo.HostName} · {ipText}），点击前往「本机被控」";
+        if (LocalDisplayNameText is not null)
+            LocalDisplayNameText.Text = effectiveName;
+        if (LocalHostNameText is not null)
+            LocalHostNameText.Text = $"系统主机名：{netInfo.HostName}";
+    }
+
+    private void SidebarLocalIdentityClicked(object sender, RoutedEventArgs e)
+    {
+        var items = DeviceList.ItemsSource as IList<DeviceListItem>;
+        var selfItem = items?.FirstOrDefault(i => i.IsLocalDevice);
+        if (selfItem is not null)
+        {
+            NavigateTo(AppPage.Remote);
+            DeviceList.SelectedItem = selfItem;
+            return;
+        }
+        NavigateTo(AppPage.Host);
+        RefreshHostAndNetworkInfo();
+    }
+
+    private void RenameDeviceFromContextMenuClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: DeviceListItem clickedItem })
+        {
+            if (!ReferenceEquals(SelectedListItem, clickedItem))
+                DeviceList.SelectedItem = clickedItem;
+        }
+        BeginRenameDeviceClicked(sender, e);
+    }
+
+    private void BeginRenameDeviceClicked(object sender, RoutedEventArgs e)
+    {
+        if (SelectedListItem is not { } item)
+            return;
+
+        RenameDeviceFeedback.Visibility = Visibility.Collapsed;
+        RenameDeviceInput.Text = item.Name;
+        InlineRenamePanel.Visibility = Visibility.Visible;
+        RenameDeviceInput.Focus();
+        RenameDeviceInput.SelectAll();
+    }
+
+    private void CancelRenameDeviceClicked(object sender, RoutedEventArgs e)
+    {
+        InlineRenamePanel.Visibility = Visibility.Collapsed;
+        RenameDeviceFeedback.Visibility = Visibility.Collapsed;
+    }
+
+    private void RenameDeviceInputKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            e.Handled = true;
+            ConfirmRenameDeviceClicked(sender, e);
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            e.Handled = true;
+            CancelRenameDeviceClicked(sender, e);
+        }
+    }
+
+    private async void ConfirmRenameDeviceClicked(object sender, RoutedEventArgs e)
+    {
+        if (isRenamingDevice || SelectedListItem is not { } item)
+            return;
+
+        string normalizedName;
+        try
+        {
+            normalizedName = DeviceIdentityHelper.NormalizeDeviceName(RenameDeviceInput.Text);
+        }
+        catch (ArgumentException ex)
+        {
+            RenameDeviceFeedback.Text = ex.Message;
+            RenameDeviceFeedback.Visibility = Visibility.Visible;
+            RenameDeviceInput.Focus();
+            return;
+        }
+
+        isRenamingDevice = true;
+        ConfirmRenameDeviceButton.IsEnabled = false;
+        try
+        {
+            var (ok, message, nextKey) = await ApplyDeviceRenameAsync(item, normalizedName);
+            if (!ok)
+            {
+                RenameDeviceFeedback.Text = message;
+                RenameDeviceFeedback.Visibility = Visibility.Visible;
+                return;
+            }
+
+            InlineRenamePanel.Visibility = Visibility.Collapsed;
+            RenameDeviceFeedback.Visibility = Visibility.Collapsed;
+            RefreshDevices(DeviceList.SelectedIndex, nextKey, preserveTransientUi: false);
+            ShowStatus(message);
+        }
+        finally
+        {
+            isRenamingDevice = false;
+            ConfirmRenameDeviceButton.IsEnabled = true;
+        }
+    }
+
+    private async Task<(bool Ok, string Message, string SelectUniqueKey)> ApplyDeviceRenameAsync(
+        DeviceListItem item,
+        string newName)
+    {
+        if (item.IsLocalDevice && item.LocalProfile is null)
+        {
+            return await ApplyLocalDeviceNameAsync(newName, item.UniqueKey);
+        }
+
+        if (item.IsCloudSynced && item.SyncedDevice is { } synced)
+        {
+            var aliases = settings.DeviceAliases is not null
+                ? new Dictionary<string, string>(settings.DeviceAliases, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            aliases[synced.DeviceKey] = newName;
+            SaveSettings(settings with { DeviceAliases = aliases });
+
+            var serverSynced = false;
+            string? serverError = null;
+            if (IsAccountLoggedIn() &&
+                settings.Account is { } acc &&
+                SecretProtector.TryUnprotect(acc.ProtectedSessionToken, out var token) &&
+                !string.IsNullOrEmpty(token))
+            {
+                try
+                {
+                    var updated = await syncApiClient.RenameDeviceAsync(
+                        acc.ServerUrl,
+                        token,
+                        synced.Id,
+                        newName,
+                        acc.ServerCertThumbprint);
+                    syncedDevices = syncedDevices
+                        .Select(d => string.Equals(d.Id, updated.Id, StringComparison.OrdinalIgnoreCase) ? updated : d)
+                        .ToArray();
+                    serverSynced = true;
+                }
+                catch (Exception ex) when (ex is SyncApiException or SyncCertificateMismatchException or HttpRequestException or TaskCanceledException or IOException)
+                {
+                    serverError = ex.Message;
+                }
+            }
+
+            return serverSynced || serverError is null
+                ? (true, $"已将设备重命名为「{newName}」。", item.UniqueKey)
+                : (true, $"已在本地重命名为「{newName}」，但同步服务器更新失败（{serverError}）。", item.UniqueKey);
+        }
+
+        var localIdx = FindLocalDeviceIndex(item);
+        if (localIdx < 0 || localIdx >= settings.Devices.Count)
+            return (false, "未找到该本地设备记录。", item.UniqueKey);
+
+        var devices = settings.Devices.ToList();
+        var old = devices[localIdx];
+        var updatedProfile = DeviceProfile.Create(newName, old.HostAddress, old.Stream, old.StreamAppName);
+        devices[localIdx] = updatedProfile;
+        SaveSettings(settings with { Devices = devices });
+
+        return (true, $"已将设备重命名为「{newName}」。", DeviceListItem.FromProfile(updatedProfile, item.IsControlledByLocal, item.IsLocalDevice).UniqueKey);
+    }
+
+    private async Task<(bool Ok, string Message, string SelectUniqueKey)> ApplyLocalDeviceNameAsync(
+        string newName,
+        string? preferredUniqueKey = null)
+    {
+        var localKey = EnsureLocalDeviceKeyPersisted();
+        var aliases = settings.DeviceAliases is not null
+            ? new Dictionary<string, string>(settings.DeviceAliases, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        aliases[localKey] = newName;
+
+        SaveSettings(settings with
+        {
+            LocalDeviceName = newName,
+            DeviceAliases = aliases,
+        });
+
+        var localSynced = syncedDevices.FirstOrDefault(d =>
+            string.Equals(d.DeviceKey, localKey, StringComparison.OrdinalIgnoreCase));
+        if (localSynced is not null &&
+            IsAccountLoggedIn() &&
+            settings.Account is { } acc &&
+            SecretProtector.TryUnprotect(acc.ProtectedSessionToken, out var token) &&
+            !string.IsNullOrEmpty(token))
+        {
+            try
+            {
+                var updated = await syncApiClient.RenameDeviceAsync(
+                    acc.ServerUrl,
+                    token,
+                    localSynced.Id,
+                    newName,
+                    acc.ServerCertThumbprint);
+                syncedDevices = syncedDevices
+                    .Select(d => string.Equals(d.Id, updated.Id, StringComparison.OrdinalIgnoreCase) ? updated : d)
+                    .ToArray();
+            }
+            catch
+            {
+                // Keep local rename even if cloud server is temporarily unreachable.
+            }
+        }
+
+        await PushConfigToDaemonIfRunningAsync();
+        ReconcileLocalPeerHost();
+        RefreshLocalIdentityBadges();
+
+        var resolvedKey = preferredUniqueKey ?? (localSynced is not null ? $"cloud:{localSynced.Id}" : "local-self");
+        return (true, $"已将本机显示名称更新为「{newName}」。", resolvedKey);
     }
 
     private void FocusDeviceAction()

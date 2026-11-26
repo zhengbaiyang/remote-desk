@@ -18,9 +18,16 @@ internal sealed record EasyTierPeerViewModel(
     string ConnectionTone,
     string LatencyText,
     string ProtocolText,
-    bool CanAddAsDevice)
+    bool IsSelf,
+    bool CanAddAsDevice,
+    bool IsAlreadyAdded,
+    string? ExistingDeviceUniqueKey,
+    string? ExistingDeviceName)
 {
-    public static EasyTierPeerViewModel FromPeer(EasyTierPeerInfo peer)
+    public static EasyTierPeerViewModel FromPeer(
+        EasyTierPeerInfo peer,
+        bool isSelf,
+        PeerClassification classification)
     {
         var hostname = string.IsNullOrWhiteSpace(peer.Hostname) ? "未命名节点" : peer.Hostname;
         var isRelayOnly = EasyTierManager.IsRelayOnlyPeer(peer);
@@ -29,25 +36,51 @@ internal sealed record EasyTierPeerViewModel(
             : isRelayOnly
                 ? "中继节点（无虚拟 IP）"
                 : "等待分配 IP（需守护服务）";
-        var tone = peer.IsSelf
+        var tone = isSelf
             ? "Self"
             : peer.ConnectionType == EasyTierManager.ConnectionTypeP2P
                 ? "P2P"
                 : peer.ConnectionType == EasyTierManager.ConnectionTypeRelay
                     ? "Relay"
                     : "Unknown";
+        var effectiveConnType = isSelf ? EasyTierManager.ConnectionTypeSelf : peer.ConnectionType;
         var latency = peer.LatencyMs is { } ms ? $"{ms:0.#} ms" : "--";
         var protocol = string.IsNullOrWhiteSpace(peer.Protocol) ? "--" : peer.Protocol.ToUpperInvariant();
-        var canAdd = !peer.IsSelf && !isRelayOnly && !string.IsNullOrWhiteSpace(peer.VirtualIpv4);
+        var canAdd = classification.State == PeerAddState.CanAdd;
+        var isAlreadyAdded = classification.State is PeerAddState.AlreadySynced or PeerAddState.AlreadyLocal;
 
-        return new EasyTierPeerViewModel(peer, hostname, ipv4, peer.ConnectionType, tone, latency, protocol, canAdd);
+        return new EasyTierPeerViewModel(
+            peer,
+            hostname,
+            ipv4,
+            effectiveConnType,
+            tone,
+            latency,
+            protocol,
+            isSelf,
+            canAdd,
+            isAlreadyAdded,
+            classification.ExistingDeviceUniqueKey,
+            classification.ExistingDeviceName);
     }
+
+    public static EasyTierPeerViewModel FromPeer(EasyTierPeerInfo peer) =>
+        FromPeer(
+            peer,
+            peer.IsSelf,
+            new PeerClassification(
+                !peer.IsSelf && !EasyTierManager.IsRelayOnlyPeer(peer) && !string.IsNullOrWhiteSpace(peer.VirtualIpv4)
+                    ? PeerAddState.CanAdd
+                    : PeerAddState.IsSelf,
+                null,
+                null));
 }
 
 public partial class MainWindow
 {
     private readonly ObservableCollection<EasyTierPeerViewModel> easyTierPeers = [];
     private CancellationTokenSource? easyTierQueryCts;
+    private EasyTierStatus? lastEasyTierStatus;
     private bool isSyncingEasyTierForm;
     private bool isSyncingEasyTierSecret;
     private bool isEasyTierSecretVisible;
@@ -372,10 +405,30 @@ public partial class MainWindow
 
     private void AddPeerAsDeviceClicked(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: EasyTierPeerViewModel vm } || !vm.CanAddAsDevice)
+        if (sender is not Button { Tag: EasyTierPeerViewModel vm } || !vm.CanAddAsDevice || string.IsNullOrWhiteSpace(vm.Peer.VirtualIpv4))
             return;
 
         OpenAddDeviceFromPeer(vm.DisplayHostname, vm.Peer.VirtualIpv4);
+    }
+
+    private void ViewExistingPeerDeviceClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: EasyTierPeerViewModel vm })
+            return;
+
+        NavigateTo(AppPage.Remote);
+        var items = DeviceList.ItemsSource as IList<DeviceListItem>;
+        var target = items?.FirstOrDefault(i =>
+            (!string.IsNullOrEmpty(vm.ExistingDeviceUniqueKey) &&
+             string.Equals(i.UniqueKey, vm.ExistingDeviceUniqueKey, StringComparison.Ordinal)) ||
+            (!string.IsNullOrWhiteSpace(vm.Peer.VirtualIpv4) &&
+             string.Equals(i.HostAddress, vm.Peer.VirtualIpv4, StringComparison.OrdinalIgnoreCase)));
+
+        if (target is not null)
+        {
+            DeviceList.SelectedItem = target;
+            ShowStatus($"「{target.Name}」已在设备列表中，已为你定位。");
+        }
     }
 
     private async Task RefreshEasyTierStatusAsync()
@@ -433,7 +486,9 @@ public partial class MainWindow
 
     private void ApplyEasyTierStatusToUi(EasyTierStatus status)
     {
+        lastEasyTierStatus = status;
         currentEasyTierVirtualIpv4 = status.VirtualIpv4;
+        RefreshLocalIdentityBadges();
 
         if (status.Running)
         {
@@ -480,9 +535,7 @@ public partial class MainWindow
         StopEasyTierButton.IsEnabled = status.Running;
         EasyTierGoEnginesButton.Visibility = status.Installed ? Visibility.Collapsed : Visibility.Visible;
 
-        easyTierPeers.Clear();
-        foreach (var peer in status.Peers)
-            easyTierPeers.Add(EasyTierPeerViewModel.FromPeer(peer));
+        RefreshEasyTierPeerViews();
 
         EasyTierPeerCountText.Text = $"{easyTierPeers.Count} 个节点";
         EasyTierPeersEmptyCard.Visibility = easyTierPeers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -507,6 +560,36 @@ public partial class MainWindow
                 EasyTierEmptySubtitle.Text = "EasyTier 已启动，请确保另一台电脑或阿里云节点已加入相同网络名称与密钥，稍后点击「刷新节点」。";
                 EasyTierEmptyEnginesButton.Visibility = Visibility.Collapsed;
             }
+        }
+    }
+
+    private void RefreshEasyTierPeerViews()
+    {
+        if (lastEasyTierStatus is null || easyTierPeers is null)
+            return;
+
+        var osHost = HostServiceManager.GetLocalNetworkInfo().HostName;
+        var localVirtualIp = lastEasyTierStatus.VirtualIpv4 ?? currentEasyTierVirtualIpv4;
+        var assignedIp = settings.Account?.AssignedVirtualIpv4;
+        var localKey = EnsureLocalDeviceKeyPersisted();
+
+        var resolvedSynced = syncedDevices
+            .Select(d => d with
+            {
+                Name = DeviceIdentityHelper.ResolveSyncedDeviceDisplayName(
+                    d,
+                    settings.DeviceAliases,
+                    localKey,
+                    settings.LocalDeviceName),
+            })
+            .ToArray();
+
+        easyTierPeers.Clear();
+        foreach (var peer in lastEasyTierStatus.Peers)
+        {
+            var isSelf = DeviceIdentityHelper.IsLocalPeer(peer, localVirtualIp, assignedIp, osHost);
+            var classification = DeviceIdentityHelper.ClassifyPeer(peer, isSelf, resolvedSynced, settings.Devices);
+            easyTierPeers.Add(EasyTierPeerViewModel.FromPeer(peer, isSelf, classification));
         }
     }
 

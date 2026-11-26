@@ -284,6 +284,21 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("Main PC", renamed["device"]["name"])
 
+        # Subsequent periodic checkin with original hostname must preserve the custom renamed name.
+        status, chk1_after_rename = self._request(
+            "POST",
+            "/api/v1/devices/checkin",
+            {
+                "deviceKey": "dev-dorm-pc",
+                "name": "DORM-PC",
+                "hostname": "DORM-PC",
+                "sunshineReady": True,
+            },
+            token=token_a,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("Main PC", chk1_after_rename["device"]["name"])
+
         status, _ = self._request("DELETE", f"/api/v1/devices/{dev1_id}", token=token_a)
         self.assertEqual(200, status)
 

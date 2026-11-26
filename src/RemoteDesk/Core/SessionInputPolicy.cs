@@ -21,10 +21,31 @@ internal static class SessionInputPolicy
     public const int VkRWin = 0x5C;
     public const int VkApps = 0x5D;
     public const int VkF11 = 0x7A;
+    public const int VkLShift = 0xA0;
+    public const int VkRShift = 0xA1;
     public const int VkLControl = 0xA2;
     public const int VkRControl = 0xA3;
     public const int VkLMenu = 0xA4;
     public const int VkRMenu = 0xA5;
+    public const int VkProcessKey = 0xE5;
+    public const int MoonlightKeyPrefix = 0x8000;
+
+    public static short NormalizeVirtualKey(int vkCode, uint scanCode, bool isExtended)
+    {
+        if (vkCode == VkShift)
+            return (short)(scanCode == 0x36 ? VkRShift : VkLShift);
+        if (vkCode == VkControl)
+            return (short)(isExtended ? VkRControl : VkLControl);
+        if (vkCode == VkMenu)
+            return (short)(isExtended ? VkRMenu : VkLMenu);
+        return (short)(vkCode & 0xFF);
+    }
+
+    public static short ToMoonlightKeyCode(int vkCode) =>
+        unchecked((short)(MoonlightKeyPrefix | (vkCode & 0xFF)));
+
+    public static bool IsLocalOsEscapeKey(int vkCode, bool altDown) =>
+        altDown && vkCode is VkTab or VkEscape;
 
     public static SessionShortcutAction ResolveShortcut(
         int vkCode,

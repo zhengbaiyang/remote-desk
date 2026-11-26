@@ -240,7 +240,7 @@ public partial class MainWindow
     private void RefreshLocalNetworkAndGpus()
     {
         var netInfo = HostServiceManager.GetLocalNetworkInfo();
-        LocalHostNameText.Text = netInfo.HostName;
+        RefreshLocalIdentityBadges();
 
         LocalIpv4List.ItemsSource = netInfo.IPv4Addresses;
         LocalIpv4Empty.Visibility = netInfo.IPv4Addresses.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -421,7 +421,63 @@ public partial class MainWindow
         }
     }
 
-    private void CopyHostNameClicked(object sender, RoutedEventArgs e) => CopyTextToClipboard(LocalHostNameText.Text, "主机名");
+    private void BeginLocalHostRenameClicked(object sender, RoutedEventArgs e)
+    {
+        LocalHostRenameInput.Text = GetEffectiveLocalDeviceName();
+        LocalHostRenameRow.Visibility = Visibility.Visible;
+        LocalHostRenameInput.Focus();
+        LocalHostRenameInput.SelectAll();
+    }
+
+    private void CancelLocalHostRenameClicked(object sender, RoutedEventArgs e)
+    {
+        LocalHostRenameRow.Visibility = Visibility.Collapsed;
+    }
+
+    private void LocalHostRenameInputKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            e.Handled = true;
+            ConfirmLocalHostRenameClicked(sender, e);
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            e.Handled = true;
+            CancelLocalHostRenameClicked(sender, e);
+        }
+    }
+
+    private async void ConfirmLocalHostRenameClicked(object sender, RoutedEventArgs e)
+    {
+        string normalizedName;
+        try
+        {
+            normalizedName = DeviceIdentityHelper.NormalizeDeviceName(LocalHostRenameInput.Text);
+        }
+        catch (ArgumentException ex)
+        {
+            ShowStatus(ex.Message, warning: true);
+            LocalHostRenameInput.Focus();
+            return;
+        }
+
+        ConfirmLocalHostRenameButton.IsEnabled = false;
+        try
+        {
+            var (_, message, selectKey) = await ApplyLocalDeviceNameAsync(normalizedName);
+            LocalHostRenameRow.Visibility = Visibility.Collapsed;
+            RefreshDevices(DeviceList.SelectedIndex, selectKey, preserveTransientUi: true);
+            ShowStatus(message);
+        }
+        finally
+        {
+            ConfirmLocalHostRenameButton.IsEnabled = true;
+        }
+    }
+
+    private void CopyHostNameClicked(object sender, RoutedEventArgs e) =>
+        CopyTextToClipboard(HostServiceManager.GetLocalNetworkInfo().HostName, "主机名");
 
     private void CopyAddressClicked(object sender, RoutedEventArgs e)
     {

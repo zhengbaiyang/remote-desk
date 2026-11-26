@@ -38,6 +38,12 @@ internal sealed record AppSettings
     public string? LocalDeviceKey { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LocalDeviceName { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? DeviceAliases { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? PairedDeviceIds { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -80,6 +86,8 @@ internal sealed class SettingsStore(string path)
         public StreamOptions? DefaultStream { get; init; }
         public AccountSettings? Account { get; init; }
         public string? LocalDeviceKey { get; init; }
+        public string? LocalDeviceName { get; init; }
+        public IReadOnlyDictionary<string, string>? DeviceAliases { get; init; }
         public IReadOnlyList<string>? PairedDeviceIds { get; init; }
         public bool SecurityPinRequired { get; init; }
         public string? SecurityPinSalt { get; init; }
@@ -123,6 +131,22 @@ internal sealed class SettingsStore(string path)
                 ? EasyTierConfig.Validate(enabledEasyTier)
                 : stored.EasyTier;
 
+            var normalizedLocalName = string.IsNullOrWhiteSpace(stored.LocalDeviceName)
+                ? null
+                : stored.LocalDeviceName.Trim();
+            Dictionary<string, string>? normalizedAliases = null;
+            if (stored.DeviceAliases is { Count: > 0 })
+            {
+                normalizedAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (k, v) in stored.DeviceAliases)
+                {
+                    if (!string.IsNullOrWhiteSpace(k) && !string.IsNullOrWhiteSpace(v))
+                        normalizedAliases[k.Trim()] = v.Trim();
+                }
+                if (normalizedAliases.Count == 0)
+                    normalizedAliases = null;
+            }
+
             return new AppSettings
             {
                 Devices = migratedDevices,
@@ -136,6 +160,8 @@ internal sealed class SettingsStore(string path)
                 DefaultStream = validatedDefaultStream,
                 Account = stored.Account,
                 LocalDeviceKey = stored.LocalDeviceKey,
+                LocalDeviceName = normalizedLocalName,
+                DeviceAliases = normalizedAliases,
                 PairedDeviceIds = stored.PairedDeviceIds,
                 SecurityPinRequired = stored.SecurityPinRequired,
                 SecurityPinSalt = stored.SecurityPinSalt,

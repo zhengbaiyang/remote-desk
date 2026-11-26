@@ -104,9 +104,14 @@ void ConnectionStatusUpdateCallback(int connectionStatus) {
     }
 }
 
+inline short ToMoonlightKeyCode(short vk) {
+    return static_cast<short>(0x8000 | (vk & 0x00FF));
+}
+
 void SendKeyDownUp(short vk, char modifiers) {
-    LiSendKeyboardEvent(vk, KEY_ACTION_DOWN, modifiers);
-    LiSendKeyboardEvent(vk, KEY_ACTION_UP, modifiers);
+    const short wireVk = ToMoonlightKeyCode(vk);
+    LiSendKeyboardEvent(wireVk, KEY_ACTION_DOWN, modifiers);
+    LiSendKeyboardEvent(wireVk, KEY_ACTION_UP, modifiers);
 }
 
 } // namespace
@@ -295,7 +300,7 @@ int __cdecl rd_input_scroll_h(short high_res_delta) {
 
 int __cdecl rd_input_key_event(short vk_code, char key_action, char modifiers) {
     if (!g_connected.load()) return 0;
-    return LiSendKeyboardEvent(vk_code, key_action, modifiers);
+    return LiSendKeyboardEvent(ToMoonlightKeyCode(vk_code), key_action, modifiers);
 }
 
 int __cdecl rd_input_utf8_text(const char* text, unsigned int length) {
@@ -308,12 +313,12 @@ int __cdecl rd_input_send_hotkey(int hotkey_id) {
 
     switch (hotkey_id) {
         case RD_HOTKEY_CTRL_ALT_DEL:
-            LiSendKeyboardEvent(VK_CONTROL, KEY_ACTION_DOWN, MODIFIER_CTRL);
-            LiSendKeyboardEvent(VK_MENU, KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_ALT);
-            LiSendKeyboardEvent(VK_DELETE, KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_EXTENDED);
-            LiSendKeyboardEvent(VK_DELETE, KEY_ACTION_UP, MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_EXTENDED);
-            LiSendKeyboardEvent(VK_MENU, KEY_ACTION_UP, MODIFIER_CTRL);
-            LiSendKeyboardEvent(VK_CONTROL, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LCONTROL), KEY_ACTION_DOWN, MODIFIER_CTRL);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LMENU), KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_ALT);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_DELETE), KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_EXTENDED);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_DELETE), KEY_ACTION_UP, MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_EXTENDED);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LMENU), KEY_ACTION_UP, MODIFIER_CTRL);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LCONTROL), KEY_ACTION_UP, 0);
             return 0;
 
         case RD_HOTKEY_WIN:
@@ -321,29 +326,29 @@ int __cdecl rd_input_send_hotkey(int hotkey_id) {
             return 0;
 
         case RD_HOTKEY_WIN_D:
-            LiSendKeyboardEvent(VK_LWIN, KEY_ACTION_DOWN, MODIFIER_META | MODIFIER_EXTENDED);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LWIN), KEY_ACTION_DOWN, MODIFIER_META | MODIFIER_EXTENDED);
             SendKeyDownUp('D', MODIFIER_META);
-            LiSendKeyboardEvent(VK_LWIN, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LWIN), KEY_ACTION_UP, 0);
             return 0;
 
         case RD_HOTKEY_ALT_TAB:
-            LiSendKeyboardEvent(VK_MENU, KEY_ACTION_DOWN, MODIFIER_ALT);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LMENU), KEY_ACTION_DOWN, MODIFIER_ALT);
             SendKeyDownUp(VK_TAB, MODIFIER_ALT);
-            LiSendKeyboardEvent(VK_MENU, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LMENU), KEY_ACTION_UP, 0);
             return 0;
 
         case RD_HOTKEY_CTRL_SHIFT_ESC:
-            LiSendKeyboardEvent(VK_CONTROL, KEY_ACTION_DOWN, MODIFIER_CTRL);
-            LiSendKeyboardEvent(VK_SHIFT, KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_SHIFT);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LCONTROL), KEY_ACTION_DOWN, MODIFIER_CTRL);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LSHIFT), KEY_ACTION_DOWN, MODIFIER_CTRL | MODIFIER_SHIFT);
             SendKeyDownUp(VK_ESCAPE, MODIFIER_CTRL | MODIFIER_SHIFT);
-            LiSendKeyboardEvent(VK_SHIFT, KEY_ACTION_UP, MODIFIER_CTRL);
-            LiSendKeyboardEvent(VK_CONTROL, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LSHIFT), KEY_ACTION_UP, MODIFIER_CTRL);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LCONTROL), KEY_ACTION_UP, 0);
             return 0;
 
         case RD_HOTKEY_WIN_L:
-            LiSendKeyboardEvent(VK_LWIN, KEY_ACTION_DOWN, MODIFIER_META | MODIFIER_EXTENDED);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LWIN), KEY_ACTION_DOWN, MODIFIER_META | MODIFIER_EXTENDED);
             SendKeyDownUp('L', MODIFIER_META);
-            LiSendKeyboardEvent(VK_LWIN, KEY_ACTION_UP, 0);
+            LiSendKeyboardEvent(ToMoonlightKeyCode(VK_LWIN), KEY_ACTION_UP, 0);
             return 0;
 
         default:

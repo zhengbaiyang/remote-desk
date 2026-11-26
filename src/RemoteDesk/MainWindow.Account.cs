@@ -66,11 +66,10 @@ public partial class MainWindow
         if (!string.IsNullOrEmpty(settings.Account?.MeshConfig?.AgentAuthKey))
             SecretProtector.TryUnprotect(settings.Account.MeshConfig.AgentAuthKey, out authKey);
 
-        var net = HostServiceManager.GetLocalNetworkInfo();
         localHostPeerHost.Reconcile(
             shouldRun: !string.IsNullOrEmpty(authKey),
             deviceKey: EnsureLocalDeviceKeyPersisted(),
-            deviceName: net.HostName,
+            deviceName: GetEffectiveLocalDeviceName(),
             authKey: authKey,
             sunshineExe: ResolveSunshineExecutable(),
             securityPinRequired: settings.SecurityPinRequired,
@@ -411,10 +410,11 @@ public partial class MainWindow
             var sunshineExe = ResolveSunshineExecutable();
             var hostStatus = HostServiceManager.GetHostStatus(sunshineExe);
             var deviceKey = EnsureLocalDeviceKeyPersisted();
+            var localName = GetEffectiveLocalDeviceName();
 
             var checkinReq = new SyncCheckinRequest(
                 DeviceKey: deviceKey,
-                Name: net.HostName,
+                Name: localName,
                 Hostname: net.HostName,
                 LanIpv4: net.IPv4Addresses.FirstOrDefault(),
                 LanIpv6: net.IPv6Addresses.FirstOrDefault(),
@@ -458,11 +458,20 @@ public partial class MainWindow
                 AutoStartWithApp = true,
             };
 
+            var adoptedLocalName = settings.LocalDeviceName;
+            if (string.IsNullOrWhiteSpace(adoptedLocalName) &&
+                !string.IsNullOrWhiteSpace(checkin.Device.Name) &&
+                !string.Equals(checkin.Device.Name.Trim(), net.HostName, StringComparison.OrdinalIgnoreCase))
+            {
+                adoptedLocalName = checkin.Device.Name.Trim();
+            }
+
             syncedDevices = checkin.Devices;
             SaveSettings(settings with
             {
                 Account = updatedAccount,
                 EasyTier = updatedEasyTier,
+                LocalDeviceName = adoptedLocalName,
             });
 
             await PushConfigToDaemonOrApplyLocallyAsync(autoStartMesh: true);
@@ -575,14 +584,13 @@ public partial class MainWindow
         if (!string.IsNullOrEmpty(acc?.ProtectedSessionToken))
             SecretProtector.TryUnprotect(acc.ProtectedSessionToken, out sessionToken);
 
-        var net = HostServiceManager.GetLocalNetworkInfo();
         return new AgentApplyConfigPayload(
             EasyTierExecutablePath: ResolveEasyTierExecutable(),
             SunshineExecutablePath: ResolveSunshineExecutable(),
             EasyTier: settings.EasyTier,
             HostModeEnabled: settings.HostModeEnabled,
             DeviceKey: EnsureLocalDeviceKeyPersisted(),
-            DeviceName: net.HostName,
+            DeviceName: GetEffectiveLocalDeviceName(),
             AccountId: IsAccountLoggedIn() ? acc?.UserId : null,
             AgentAuthKey: authKey,
             AgentPort: AgentIpcConstants.DefaultAgentPort,
@@ -779,7 +787,7 @@ public partial class MainWindow
     private RemoteSessionLockContext BuildSessionLockContext(SyncedDeviceInfo? synced)
     {
         var localKey = EnsureLocalDeviceKeyPersisted();
-        var localName = HostServiceManager.GetLocalNetworkInfo().HostName;
+        var localName = GetEffectiveLocalDeviceName();
         var acc = settings.Account;
         string? token = null;
         if (!string.IsNullOrEmpty(acc?.ProtectedSessionToken))
@@ -1029,7 +1037,7 @@ public partial class MainWindow
                     }
 
                     ShowStatus($"正在为「{synced.Name}」执行静默安全配对…");
-                    var localHostName = HostServiceManager.GetLocalNetworkInfo().HostName;
+                    var localHostName = GetEffectiveLocalDeviceName();
 
                     using var identity = GameStreamIdentity.LoadOrCreate();
                     var gsClient = new GameStreamClient(identity);
