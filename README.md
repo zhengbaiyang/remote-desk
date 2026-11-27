@@ -34,7 +34,9 @@
   <a href="#从源码构建">从源码构建</a>
 </p>
 
-![RemoteDesk 2.1 主界面（Oink × macOS 柔和浅色模式）](docs/images/desktop.png)
+<p align="center">
+  <img src="docs/images/remotedesk-demo.gif" alt="RemoteDesk 2.1 核心亮点演示" width="960" />
+</p>
 
 ---
 
@@ -71,6 +73,8 @@
   - 收敛并统一托管 **Sunshine**（高刷被控端）与 **EasyTier**（P2P 跨网组网）两大开源核心，内置国内 HTTPS 镜像加速、离线包导入与 GitHub Release / Velopack 自动更新。
 
 ## 界面预览
+
+![RemoteDesk 2.1 主界面（Oink × macOS 柔和浅色模式）](docs/images/desktop.png)
 
 <table>
   <tr>
