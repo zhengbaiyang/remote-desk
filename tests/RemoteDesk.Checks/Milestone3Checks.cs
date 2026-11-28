@@ -1240,6 +1240,95 @@ internal static class Milestone3Checks
             Equal(false, SessionInputPolicy.IsLocalOsEscapeKey('A', altDown: true));
         }),
 
+        ("SessionInputPolicy normalizes raw keyboard events, office Win-key policy, and SessionModifierState", () =>
+        {
+            // Standard key down and break (up).
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent('A', 0x1E, 0, out var vkA, out var downA, out var extA));
+            Equal((short)'A', vkA);
+            Equal(true, downA);
+            Equal(false, extA);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent('A', 0x1E, SessionInputPolicy.RawKeyBreakFlag, out var vkAUp, out var downAUp, out var extAUp));
+            Equal((short)'A', vkAUp);
+            Equal(false, downAUp);
+            Equal(false, extAUp);
+
+            // Overrun / zero packets are ignored.
+            Equal(false, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.RawKeyboardOverrunCode, 0x1E, 0, out _, out _, out _));
+            Equal(false, SessionInputPolicy.TryNormalizeRawKeyboardEvent(0, 0x1E, 0, out _, out _, out _));
+            Equal(false, SessionInputPolicy.TryNormalizeRawKeyboardEvent('A', SessionInputPolicy.RawKeyboardOverrunCode, 0, out _, out _, out _));
+
+            // Left/Right Shift, Ctrl, Alt normalization.
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkShift, 0x2A, 0, out var lShift, out var lShiftDown, out var lShiftExt));
+            Equal((short)SessionInputPolicy.VkLShift, lShift);
+            Equal(true, lShiftDown);
+            Equal(false, lShiftExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkShift, 0x36, SessionInputPolicy.RawKeyE0Flag, out var rShift, out _, out var rShiftExt));
+            Equal((short)SessionInputPolicy.VkRShift, rShift);
+            Equal(false, rShiftExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkControl, 0x1D, 0, out var lCtrl, out _, out var lCtrlExt));
+            Equal((short)SessionInputPolicy.VkLControl, lCtrl);
+            Equal(false, lCtrlExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkControl, 0x1D, SessionInputPolicy.RawKeyE0Flag, out var rCtrl, out _, out var rCtrlExt));
+            Equal((short)SessionInputPolicy.VkRControl, rCtrl);
+            Equal(true, rCtrlExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkMenu, 0x38, 0, out var lAlt, out _, out var lAltExt));
+            Equal((short)SessionInputPolicy.VkLMenu, lAlt);
+            Equal(false, lAltExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkMenu, 0x38, SessionInputPolicy.RawKeyE0Flag, out var rAlt, out _, out var rAltExt));
+            Equal((short)SessionInputPolicy.VkRMenu, rAlt);
+            Equal(true, rAltExt);
+
+            // Enter vs Numpad Enter, Arrow keys, and Pause (E1).
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(0x0D, 0x1C, 0, out var mainEnter, out _, out var mainEnterExt));
+            Equal((short)0x0D, mainEnter);
+            Equal(false, mainEnterExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(0x0D, 0x1C, SessionInputPolicy.RawKeyE0Flag, out var numEnter, out _, out var numEnterExt));
+            Equal((short)0x0D, numEnter);
+            Equal(true, numEnterExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(0x25, 0x4B, SessionInputPolicy.RawKeyE0Flag, out var leftArrow, out _, out var leftArrowExt));
+            Equal((short)0x25, leftArrow);
+            Equal(true, leftArrowExt);
+
+            Equal(true, SessionInputPolicy.TryNormalizeRawKeyboardEvent(SessionInputPolicy.VkPause, 0x1D, SessionInputPolicy.RawKeyE1Flag, out var pauseVk, out var pauseDown, out var pauseExt));
+            Equal((short)SessionInputPolicy.VkPause, pauseVk);
+            Equal(true, pauseDown);
+            Equal(false, pauseExt);
+
+            // Office mode keeps Win key local, Game lock forwards it.
+            Equal(true, SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(SessionInputPolicy.VkLWin, isPointerLocked: false));
+            Equal(true, SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(SessionInputPolicy.VkRWin, isPointerLocked: false));
+            Equal(false, SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(SessionInputPolicy.VkLWin, isPointerLocked: true));
+            Equal(false, SessionInputPolicy.ShouldIgnoreKeyInOfficeMode('A', isPointerLocked: false));
+
+            // Extended scancode builder for MapVirtualKey fallback.
+            Equal(0u, SessionInputPolicy.BuildMapVirtualKeyScanCode(0, isExtended: false));
+            Equal(0x4Bu, SessionInputPolicy.BuildMapVirtualKeyScanCode(0x4B, isExtended: false));
+            Equal(0xE04Bu, SessionInputPolicy.BuildMapVirtualKeyScanCode(0x4B, isExtended: true));
+
+            // SessionModifierState tracks left/right keys independently.
+            var mods = new SessionModifierState();
+            mods.Update(SessionInputPolicy.VkLShift, true);
+            mods.Update(SessionInputPolicy.VkRShift, true);
+            Equal(true, mods.IsShiftDown);
+            mods.Update(SessionInputPolicy.VkLShift, false);
+            Equal(true, mods.IsShiftDown);
+            mods.Update(SessionInputPolicy.VkLControl, true);
+            Equal((sbyte)(SessionInputPolicy.ModMaskShift | SessionInputPolicy.ModMaskCtrl), mods.ToMoonlightModifiers(isExtended: false));
+            Equal((sbyte)(SessionInputPolicy.ModMaskShift | SessionInputPolicy.ModMaskCtrl | SessionInputPolicy.ModMaskExtended), mods.ToMoonlightModifiers(isExtended: true));
+            mods.Reset();
+            Equal(false, mods.IsShiftDown);
+            Equal(false, mods.IsCtrlDown);
+            Equal((sbyte)0, mods.ToMoonlightModifiers(isExtended: false));
+        }),
+
         ("DeviceIdentityHelper identifies self hosts/peers, resolves aliases, classifies peers, and SettingsStore persists names", () =>
         {
             Equal("宿舍台式机", DeviceIdentityHelper.NormalizeDeviceName("  宿舍台式机  "));

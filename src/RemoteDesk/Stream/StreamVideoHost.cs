@@ -22,10 +22,12 @@ internal sealed class StreamVideoHost : HwndHost
     private IntPtr _keyboardHook;
     private HookProcDelegate? _hookProc;
     private bool _rawMouseRegistered;
+    private bool _rawKeyboardRegistered;
     private bool _hookCtrlDown;
     private bool _hookAltDown;
     private bool _isPointerLocked;
     private bool _suppressNextLButtonUp;
+    private SessionModifierState _modifierState;
 
     private int _hostPixelW = 1280;
     private int _hostPixelH = 720;
@@ -38,6 +40,18 @@ internal sealed class StreamVideoHost : HwndHost
     public NativeStreamSession? Session { get; set; }
     public ControlInputMode InputMode => _inputMode;
     public bool IsPointerLocked => _isPointerLocked;
+    public bool IsKeyboardCaptureSuspended { get; set; }
+
+    public bool IsRawKeyboardCaptureActive =>
+        _rawKeyboardRegistered &&
+        Session is not null &&
+        !IsKeyboardCaptureSuspended &&
+        _hwnd != IntPtr.Zero &&
+        _topLevelHwnd != IntPtr.Zero &&
+        GetForegroundWindow() == _topLevelHwnd &&
+        System.Windows.Input.Keyboard.FocusedElement is not System.Windows.Controls.Primitives.TextBoxBase
+            and not System.Windows.Controls.PasswordBox
+            and not System.Windows.Controls.ComboBox;
 
     public void FocusVideoSurface()
     {
@@ -45,8 +59,60 @@ internal sealed class StreamVideoHost : HwndHost
             SetFocus(_hwnd);
     }
 
+    public void SuspendKeyboardCapture(bool suspended)
+    {
+        if (IsKeyboardCaptureSuspended == suspended)
+            return;
+        IsKeyboardCaptureSuspended = suspended;
+        if (suspended)
+            SendReleaseAllModifiers();
+        else
+            SyncModifiersFromAsyncState();
+    }
+
+    public bool ShouldSwallowHostWindowKeyMessage(uint msg, IntPtr wParam, IntPtr lParam) =>
+        ShouldSwallowLegacyKeyMessage(msg, wParam, lParam);
+
     public bool HandleHostWindowKeyMessage(uint msg, IntPtr wParam, IntPtr lParam) =>
         HandleKeyMessage(msg, wParam, lParam);
+
+    public static void DisableLocalImeForWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        try
+        {
+            if (!ImmAssociateContextEx(hwnd, IntPtr.Zero, 0))
+                ImmAssociateContext(hwnd, IntPtr.Zero);
+        }
+        catch
+        {
+            // Best-effort IMM32 detach.
+        }
+
+        try
+        {
+            if (TF_GetThreadMgr(out var threadMgr) == 0 && threadMgr is not null)
+            {
+                var prevDocMgr = IntPtr.Zero;
+                try
+                {
+                    threadMgr.AssociateFocus(hwnd, IntPtr.Zero, out prevDocMgr);
+                }
+                finally
+                {
+                    if (prevDocMgr != IntPtr.Zero)
+                        Marshal.Release(prevDocMgr);
+                    Marshal.ReleaseComObject(threadMgr);
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort TSF detach; raw keyboard capture remains active.
+        }
+    }
 
     public event Action<ControlInputMode, bool, string?>? InputModeChanged;
     public event Action? FullscreenToggleRequested;
@@ -137,15 +203,42 @@ internal sealed class StreamVideoHost : HwndHost
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException($"创建原生视频渲染宿主窗口失败（Win32 错误 {Marshal.GetLastWin32Error()}）。");
 
-        ImmAssociateContext(_hwnd, IntPtr.Zero);
+        DisableLocalImeForWindow(_hwnd);
         DragAcceptFiles(_hwnd, true);
         _topLevelHwnd = GetAncestor(_hwnd, GA_ROOT);
+
+        var keyboardRid = new RAWINPUTDEVICE[]
+        {
+            new()
+            {
+                usUsagePage = 0x01,
+                usUsage = 0x06,
+                dwFlags = 0,
+                hwndTarget = _hwnd,
+            },
+        };
+        _rawKeyboardRegistered = RegisterRawInputDevices(keyboardRid, (uint)keyboardRid.Length, (uint)Marshal.SizeOf<RAWINPUTDEVICE>());
         return new HandleRef(this, _hwnd);
     }
 
     protected override void DestroyWindowCore(HandleRef hwnd)
     {
         ExitGameLock();
+        if (_rawKeyboardRegistered)
+        {
+            var keyboardRid = new RAWINPUTDEVICE[]
+            {
+                new()
+                {
+                    usUsagePage = 0x01,
+                    usUsage = 0x06,
+                    dwFlags = RIDEV_REMOVE,
+                    hwndTarget = IntPtr.Zero,
+                },
+            };
+            RegisterRawInputDevices(keyboardRid, (uint)keyboardRid.Length, (uint)Marshal.SizeOf<RAWINPUTDEVICE>());
+            _rawKeyboardRegistered = false;
+        }
         if (hwnd.Handle != IntPtr.Zero)
             DestroyWindow(hwnd.Handle);
         _hwnd = IntPtr.Zero;
@@ -172,6 +265,9 @@ internal sealed class StreamVideoHost : HwndHost
         var m = (uint)msg.message;
         if (m is WM_KEYDOWN or WM_SYSKEYDOWN or WM_KEYUP or WM_SYSKEYUP)
         {
+            if (IsRawKeyboardCaptureActive)
+                return ShouldSwallowLegacyKeyMessage(m, msg.wParam, msg.lParam);
+
             if (HandleKeyMessage(m, msg.wParam, msg.lParam))
                 return true;
         }
@@ -201,12 +297,29 @@ internal sealed class StreamVideoHost : HwndHost
                 }
                 break;
 
+            case WM_SETFOCUS:
+                SyncModifiersFromAsyncState();
+                break;
+
             case WM_KILLFOCUS:
                 if (_isPointerLocked)
                     Dispatcher.BeginInvoke(() => ReleaseCaptureForDeactivation());
                 else
                     SendReleaseAllModifiers();
                 break;
+
+            case WM_INPUTLANGCHANGE:
+                DisableLocalImeForWindow(_hwnd);
+                break;
+
+            case WM_IME_SETCONTEXT:
+                handled = true;
+                return DefWindowProc(hwnd, WM_IME_SETCONTEXT, wParam, IntPtr.Zero);
+
+            case WM_IME_STARTCOMPOSITION:
+            case WM_IME_COMPOSITION:
+                handled = true;
+                return IntPtr.Zero;
 
             case WM_MOUSEMOVE:
                 if ((_inputMode == ControlInputMode.OfficeFreePointer || !_isPointerLocked) && Session is not null)
@@ -220,10 +333,8 @@ internal sealed class StreamVideoHost : HwndHost
                 return IntPtr.Zero;
 
             case WM_INPUT:
-                if (_isPointerLocked && Session is not null)
-                    ProcessRawMouseInput(lParam);
-                handled = true;
-                return IntPtr.Zero;
+                ProcessRawInput(lParam);
+                break;
 
             case WM_LBUTTONDOWN:
                 SetFocus(hwnd);
@@ -299,10 +410,30 @@ internal sealed class StreamVideoHost : HwndHost
                 handled = true;
                 return IntPtr.Zero;
 
+            case WM_CHAR:
+            case WM_SYSCHAR:
+            case WM_DEADCHAR:
+            case WM_SYSDEADCHAR:
+                if (IsRawKeyboardCaptureActive)
+                {
+                    handled = true;
+                    return IntPtr.Zero;
+                }
+                break;
+
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
             case WM_KEYUP:
             case WM_SYSKEYUP:
+                if (IsRawKeyboardCaptureActive)
+                {
+                    if (ShouldSwallowLegacyKeyMessage((uint)msg, wParam, lParam))
+                    {
+                        handled = true;
+                        return IntPtr.Zero;
+                    }
+                    break;
+                }
                 if (HandleKeyMessage((uint)msg, wParam, lParam))
                 {
                     handled = true;
@@ -378,6 +509,21 @@ internal sealed class StreamVideoHost : HwndHost
         return true;
     }
 
+    private bool ShouldSwallowLegacyKeyMessage(uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        _ = msg;
+        var rawVk = (int)(wParam.ToInt64() & 0xFFFF);
+        var altDown = (GetKeyState(VK_MENU) & 0x8000) != 0 || ((lParam.ToInt64() >> 29) & 1) != 0;
+
+        if (SessionInputPolicy.IsLocalOsEscapeKey(rawVk, altDown))
+            return false;
+
+        if (SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(rawVk, _isPointerLocked))
+            return false;
+
+        return true;
+    }
+
     private bool HandleKeyMessage(uint msg, IntPtr wParam, IntPtr lParam)
     {
         var rawVk = (int)(wParam.ToInt64() & 0xFFFF);
@@ -388,10 +534,20 @@ internal sealed class StreamVideoHost : HwndHost
 
         if (rawVk == SessionInputPolicy.VkProcessKey)
         {
-            var mappedVk = (int)MapVirtualKey(scanCode, MAPVK_VSC_TO_VK_EX);
-            if (mappedVk == 0)
-                return false;
-            rawVk = mappedVk;
+            var immVk = _hwnd != IntPtr.Zero ? (int)ImmGetVirtualKey(_hwnd) : 0;
+            if (immVk != 0 && immVk != SessionInputPolicy.VkProcessKey)
+            {
+                rawVk = immVk;
+            }
+            else
+            {
+                var mappedVk = (int)MapVirtualKey(
+                    SessionInputPolicy.BuildMapVirtualKeyScanCode(scanCode, isExtended),
+                    MAPVK_VSC_TO_VK_EX);
+                if (mappedVk == 0)
+                    return false;
+                rawVk = mappedVk;
+            }
         }
 
         var ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -410,10 +566,14 @@ internal sealed class StreamVideoHost : HwndHost
         if (SessionInputPolicy.IsLocalOsEscapeKey(rawVk, altDown))
             return false;
 
+        if (SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(rawVk, _isPointerLocked))
+            return false;
+
         if (!isDown && rawVk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
             return true;
 
         var normalizedVk = SessionInputPolicy.NormalizeVirtualKey(rawVk, scanCode, isExtended);
+        _modifierState.Update(normalizedVk, isDown);
         SendKeyToRemote(normalizedVk, isDown, isExtended);
         return true;
     }
@@ -478,8 +638,22 @@ internal sealed class StreamVideoHost : HwndHost
         }
     }
 
+    private void SyncModifiersFromAsyncState()
+    {
+        _modifierState.Reset();
+        _modifierState.Update(VK_LSHIFT, (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0);
+        _modifierState.Update(VK_RSHIFT, (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+        _modifierState.Update(VK_LCONTROL, (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0);
+        _modifierState.Update(VK_RCONTROL, (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+        _modifierState.Update(VK_LMENU, (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0);
+        _modifierState.Update(VK_RMENU, (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+        _modifierState.Update(VK_LWIN, (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0);
+        _modifierState.Update(VK_RWIN, (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+    }
+
     private void SendReleaseAllModifiers()
     {
+        _modifierState.Reset();
         if (Session is null)
             return;
 
@@ -490,33 +664,39 @@ internal sealed class StreamVideoHost : HwndHost
         Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LSHIFT), NativeStreamBridge.KeyUp, 0);
         Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_RSHIFT), NativeStreamBridge.KeyUp, 0);
         Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_LWIN), NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
+        Session.SendKeyEvent(SessionInputPolicy.ToMoonlightKeyCode(VK_RWIN), NativeStreamBridge.KeyUp, NativeStreamBridge.ModExtended);
     }
 
-    private void SendKeyToRemote(short vk, bool isDown, bool isExtended)
+    private void SendKeyToRemote(short vk, bool isDown, bool isExtended, sbyte? explicitModifiers = null)
     {
         if (Session is null)
             return;
 
-        sbyte mods = 0;
-        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) mods |= NativeStreamBridge.ModShift;
-        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) mods |= NativeStreamBridge.ModCtrl;
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0) mods |= NativeStreamBridge.ModAlt;
-        if (((GetKeyState(VK_LWIN) & 0x8000) != 0) || ((GetKeyState(VK_RWIN) & 0x8000) != 0))
-            mods |= NativeStreamBridge.ModMeta;
-        if (isExtended) mods |= NativeStreamBridge.ModExtended;
+        sbyte mods;
+        if (explicitModifiers.HasValue)
+        {
+            mods = explicitModifiers.Value;
+        }
+        else
+        {
+            mods = 0;
+            if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) mods |= NativeStreamBridge.ModShift;
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) mods |= NativeStreamBridge.ModCtrl;
+            if ((GetKeyState(VK_MENU) & 0x8000) != 0) mods |= NativeStreamBridge.ModAlt;
+            if (((GetKeyState(VK_LWIN) & 0x8000) != 0) || ((GetKeyState(VK_RWIN) & 0x8000) != 0))
+                mods |= NativeStreamBridge.ModMeta;
+            if (isExtended) mods |= NativeStreamBridge.ModExtended;
+        }
 
         var wireVk = SessionInputPolicy.ToMoonlightKeyCode(vk);
         Session.SendKeyEvent(wireVk, isDown ? NativeStreamBridge.KeyDown : NativeStreamBridge.KeyUp, mods);
     }
 
-    private void ProcessRawMouseInput(IntPtr hRawInput)
+    private void ProcessRawInput(IntPtr hRawInput)
     {
         uint size = 0;
         var headerSize = (uint)Marshal.SizeOf<RAWINPUTHEADER>();
-        if (GetRawInputData(hRawInput, RID_INPUT, IntPtr.Zero, ref size, headerSize) != 0 || size == 0)
-            return;
-
-        if (size < headerSize + Marshal.SizeOf<RAWMOUSE>())
+        if (GetRawInputData(hRawInput, RID_INPUT, IntPtr.Zero, ref size, headerSize) != 0 || size < headerSize)
             return;
 
         var buf = Marshal.AllocHGlobal((int)size);
@@ -526,22 +706,75 @@ internal sealed class StreamVideoHost : HwndHost
                 return;
 
             var header = Marshal.PtrToStructure<RAWINPUTHEADER>(buf);
-            if (header.dwType != RIM_TYPEMOUSE)
-                return;
-
-            var mouse = Marshal.PtrToStructure<RAWMOUSE>(IntPtr.Add(buf, (int)headerSize));
-            if ((mouse.usFlags & MOUSE_MOVE_ABSOLUTE) == 0 && (mouse.lLastX != 0 || mouse.lLastY != 0))
+            if (header.dwType == RIM_TYPEMOUSE)
             {
-                var dx = (short)Math.Clamp(mouse.lLastX, short.MinValue, short.MaxValue);
-                var dy = (short)Math.Clamp(mouse.lLastY, short.MinValue, short.MaxValue);
-                Session?.SendMouseMove(dx, dy);
-                RecenterCursorInHost();
+                if (!_isPointerLocked || Session is null || size < headerSize + (uint)Marshal.SizeOf<RAWMOUSE>())
+                    return;
+
+                var mouse = Marshal.PtrToStructure<RAWMOUSE>(IntPtr.Add(buf, (int)headerSize));
+                if ((mouse.usFlags & MOUSE_MOVE_ABSOLUTE) == 0 && (mouse.lLastX != 0 || mouse.lLastY != 0))
+                {
+                    var dx = (short)Math.Clamp(mouse.lLastX, short.MinValue, short.MaxValue);
+                    var dy = (short)Math.Clamp(mouse.lLastY, short.MinValue, short.MaxValue);
+                    Session.SendMouseMove(dx, dy);
+                    RecenterCursorInHost();
+                }
+            }
+            else if (header.dwType == RIM_TYPEKEYBOARD)
+            {
+                if (!IsRawKeyboardCaptureActive || size < headerSize + (uint)Marshal.SizeOf<RAWKEYBOARD>())
+                    return;
+
+                var keyboard = Marshal.PtrToStructure<RAWKEYBOARD>(IntPtr.Add(buf, (int)headerSize));
+                ProcessRawKeyboardInput(keyboard);
             }
         }
         finally
         {
             Marshal.FreeHGlobal(buf);
         }
+    }
+
+    private void ProcessRawKeyboardInput(RAWKEYBOARD keyboard)
+    {
+        if (!SessionInputPolicy.TryNormalizeRawKeyboardEvent(
+                keyboard.VKey,
+                keyboard.MakeCode,
+                keyboard.Flags,
+                out var normalizedVk,
+                out var isDown,
+                out var isExtended))
+        {
+            return;
+        }
+
+        _modifierState.Update(normalizedVk, isDown);
+        var ctrlDown = _modifierState.IsCtrlDown;
+        var altDown = _modifierState.IsAltDown;
+        var shiftDown = _modifierState.IsShiftDown;
+
+        var action = SessionInputPolicy.ResolveShortcut(normalizedVk, isDown, ctrlDown, altDown, shiftDown, _isPointerLocked);
+        if (action != SessionShortcutAction.None)
+        {
+            if (action == SessionShortcutAction.ReleasePointerLock)
+                ClipCursor(IntPtr.Zero);
+            Dispatcher.BeginInvoke(() => ExecuteShortcutAction(action, synchronous: true));
+            return;
+        }
+
+        if (SessionInputPolicy.IsLocalOsEscapeKey(normalizedVk, altDown))
+            return;
+
+        if (SessionInputPolicy.ShouldIgnoreKeyInOfficeMode(normalizedVk, _isPointerLocked))
+            return;
+
+        if (!isDown && normalizedVk == VK_F11 && !ctrlDown && !altDown && !shiftDown)
+            return;
+
+        if (isDown && !HasVideoFocus)
+            SetFocus(_hwnd);
+
+        SendKeyToRemote(normalizedVk, isDown, isExtended, _modifierState.ToMoonlightModifiers(isExtended));
     }
 
     private bool IsCursorInsideVideoClient()
@@ -702,7 +935,8 @@ internal sealed class StreamVideoHost : HwndHost
             if (SessionInputPolicy.ShouldForwardSystemKeyToRemote(vk, altDown, _isPointerLocked))
             {
                 var normalizedVk = SessionInputPolicy.NormalizeVirtualKey(vk, kb.scanCode, isExtended);
-                SendKeyToRemote(normalizedVk, !isUp, isExtended);
+                _modifierState.Update(normalizedVk, !isUp);
+                SendKeyToRemote(normalizedVk, !isUp, isExtended, _modifierState.ToMoonlightModifiers(isExtended));
                 return (IntPtr)1;
             }
         }
@@ -750,13 +984,21 @@ internal sealed class StreamVideoHost : HwndHost
     private const uint GA_ROOT = 2;
 
     private const uint WM_SIZE = 0x0005;
+    private const uint WM_SETFOCUS = 0x0007;
     private const uint WM_KILLFOCUS = 0x0008;
     private const uint WM_SETCURSOR = 0x0020;
+    private const uint WM_INPUTLANGCHANGE = 0x0051;
     private const uint WM_INPUT = 0x00FF;
     private const uint WM_KEYDOWN = 0x0100;
     private const uint WM_KEYUP = 0x0101;
+    private const uint WM_CHAR = 0x0102;
+    private const uint WM_DEADCHAR = 0x0103;
     private const uint WM_SYSKEYDOWN = 0x0104;
     private const uint WM_SYSKEYUP = 0x0105;
+    private const uint WM_SYSCHAR = 0x0106;
+    private const uint WM_SYSDEADCHAR = 0x0107;
+    private const uint WM_IME_STARTCOMPOSITION = 0x010D;
+    private const uint WM_IME_COMPOSITION = 0x010F;
     private const uint WM_MOUSEMOVE = 0x0200;
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
@@ -769,6 +1011,7 @@ internal sealed class StreamVideoHost : HwndHost
     private const uint WM_XBUTTONUP = 0x020C;
     private const uint WM_MOUSEHWHEEL = 0x020E;
     private const uint WM_DROPFILES = 0x0233;
+    private const uint WM_IME_SETCONTEXT = 0x0281;
 
     private const int WH_KEYBOARD_LL = 13;
     private const uint LLKHF_EXTENDED = 0x01;
@@ -776,6 +1019,7 @@ internal sealed class StreamVideoHost : HwndHost
     private const uint RID_INPUT = 0x10000003;
     private const uint RIDEV_REMOVE = 0x00000001;
     private const uint RIM_TYPEMOUSE = 0;
+    private const uint RIM_TYPEKEYBOARD = 1;
     private const ushort MOUSE_MOVE_ABSOLUTE = 0x01;
 
     private const uint MAPVK_VSC_TO_VK_EX = 3;
@@ -860,6 +1104,17 @@ internal sealed class StreamVideoHost : HwndHost
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct RAWKEYBOARD
+    {
+        public ushort MakeCode;
+        public ushort Flags;
+        public ushort Reserved;
+        public ushort VKey;
+        public uint Message;
+        public uint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
     {
         public uint vkCode;
@@ -867,6 +1122,20 @@ internal sealed class StreamVideoHost : HwndHost
         public uint flags;
         public uint time;
         public UIntPtr dwExtraInfo;
+    }
+
+    [ComImport]
+    [Guid("aa80e801-2021-11d2-93e0-0060b067b86e")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITfThreadMgr
+    {
+        [PreserveSig] int Activate(out uint ptid);
+        [PreserveSig] int Deactivate();
+        [PreserveSig] int CreateDocumentMgr(out IntPtr ppdim);
+        [PreserveSig] int EnumDocumentMgrs(out IntPtr ppEnum);
+        [PreserveSig] int GetFocus(out IntPtr ppdimFocus);
+        [PreserveSig] int SetFocus(IntPtr pdimFocus);
+        [PreserveSig] int AssociateFocus(IntPtr hwnd, IntPtr pdimNew, out IntPtr ppdimPrev);
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -969,6 +1238,15 @@ internal sealed class StreamVideoHost : HwndHost
 
     [DllImport("imm32.dll")]
     private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
+
+    [DllImport("imm32.dll")]
+    private static extern bool ImmAssociateContextEx(IntPtr hWnd, IntPtr hIMC, uint dwFlags);
+
+    [DllImport("imm32.dll")]
+    private static extern uint ImmGetVirtualKey(IntPtr hWnd);
+
+    [DllImport("msctf.dll")]
+    private static extern int TF_GetThreadMgr(out ITfThreadMgr? pptim);
 
     [DllImport("shell32.dll")]
     private static extern void DragFinish(IntPtr hDrop);

@@ -30,6 +30,7 @@ internal sealed record RemoteSessionLockContext(
 
 public partial class RemoteSessionWindow : Window
 {
+    private const int WmInputLangChange = 0x0051;
     private const int WmClipboardUpdate = 0x031D;
 
     private readonly DeviceProfile _device;
@@ -161,6 +162,7 @@ public partial class RemoteSessionWindow : Window
         if (_hwndSource is null && PresentationSource.FromVisual(this) is HwndSource src)
         {
             _hwndSource = src;
+            StreamVideoHost.DisableLocalImeForWindow(src.Handle);
             _hwndSource.AddHook(WindowWndProcHook);
             AddClipboardFormatListener(src.Handle);
         }
@@ -617,6 +619,10 @@ public partial class RemoteSessionWindow : Window
         {
             _ = PushLocalClipboardAsync();
         }
+        else if (msg == WmInputLangChange)
+        {
+            StreamVideoHost.DisableLocalImeForWindow(hwnd);
+        }
         else if (msg is 0x0100 or 0x0101 or 0x0104 or 0x0105 &&
                  !_isClosing &&
                  _activeMenuCount == 0 &&
@@ -624,10 +630,20 @@ public partial class RemoteSessionWindow : Window
                  !VideoHost.HasVideoFocus &&
                  Keyboard.FocusedElement is not TextBoxBase and not PasswordBox and not ComboBox)
         {
-            if (msg is 0x0100 or 0x0104)
-                VideoHost.FocusVideoSurface();
-            if (VideoHost.HandleHostWindowKeyMessage((uint)msg, wParam, lParam))
-                handled = true;
+            if (VideoHost.IsRawKeyboardCaptureActive)
+            {
+                if (msg is 0x0100 or 0x0104)
+                    VideoHost.FocusVideoSurface();
+                if (VideoHost.ShouldSwallowHostWindowKeyMessage((uint)msg, wParam, lParam))
+                    handled = true;
+            }
+            else
+            {
+                if (msg is 0x0100 or 0x0104)
+                    VideoHost.FocusVideoSurface();
+                if (VideoHost.HandleHostWindowKeyMessage((uint)msg, wParam, lParam))
+                    handled = true;
+            }
         }
         return IntPtr.Zero;
     }
@@ -1032,6 +1048,9 @@ public partial class RemoteSessionWindow : Window
 
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (ReferenceEquals(sender, this) && VideoHost.IsRawKeyboardCaptureActive)
+            return;
+
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (VideoHost.TryHandleWindowShortcut(key, Keyboard.Modifiers))
             e.Handled = true;
@@ -1112,6 +1131,7 @@ public partial class RemoteSessionWindow : Window
     private void MenuPopupOpened(object? sender, EventArgs e)
     {
         _activeMenuCount++;
+        VideoHost.SuspendKeyboardCapture(true);
         if (_overlay is not null)
             _overlay.IsExternalPopupOpen = true;
     }
@@ -1119,6 +1139,7 @@ public partial class RemoteSessionWindow : Window
     private void MenuPopupClosed(object? sender, EventArgs e)
     {
         _activeMenuCount = Math.Max(0, _activeMenuCount - 1);
+        VideoHost.SuspendKeyboardCapture(_activeMenuCount > 0);
         if (_overlay is not null && _activeMenuCount == 0)
             _overlay.IsExternalPopupOpen = false;
         if (ReferenceEquals(sender, HotkeysPopup))
